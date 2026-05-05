@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "Distribution": {
+      "title": "MBG Distribution",
+      "description": "Record of Makan Bergizi Gratis distribution",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date of distribution"
+        },
+        "arrivalTime": {
+          "type": "string",
+          "description": "Time of arrival"
+        },
+        "recipient": {
+          "type": "string",
+          "description": "Name of the tendik (staff) who received it"
+        },
+        "studentOfficer": {
+          "type": "string",
+          "description": "Name of the student officer (optional)"
+        },
+        "menuDetails": {
+          "type": "string",
+          "description": "Details of the menu distributed"
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Base64 or URL of the menu photo documentation"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Number of MBG distributed"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Internal UID of the user who created the record"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["date", "arrivalTime", "recipient", "menuDetails", "amount", "userId"]
+    },
+    "DistributionServing": {
+      "title": "MBG Serving",
+      "description": "Record of Makan Bergizi Gratis serving/distribution to individuals",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "recipientName": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "number"
+        },
+        "userId": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["date", "recipientName", "amount", "userId"]
+    }
+  },
+  "firestore": {
+    "/distributions/{distributionId}": {
+      "schema": "Distribution",
+      "description": "Collection of all MBG distribution records"
+    },
+    "/servings/{servingId}": {
+      "schema": "DistributionServing",
+      "description": "Collection of all MBG serving records to individuals"
+    }
+  }
+}

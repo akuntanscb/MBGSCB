@@ -1,0 +1,6 @@
+{
+  "name": "MBG Tracker SCB",
+  "description": "Aplikasi tracking distribusi Makan Bergizi Gratis (MBG) di Sekolah Cendekia Baznas dengan fitur input data dan laporan distribusi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

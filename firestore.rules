@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global helpers
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation for Distribution
+    function isValidDistribution(data) {
+      return data.keys().hasAll(['date', 'arrivalTime', 'recipient', 'menuDetails', 'amount', 'userId', 'createdAt', 'updatedAt'])
+        && (data.keys().size() >= 8 && data.keys().size() <= 11)
+        && data.date is string && data.date.size() <= 100
+        && data.arrivalTime is string && data.arrivalTime.size() <= 20
+        && data.recipient is string && data.recipient.size() <= 200
+        && (!data.keys().hasAll(['studentOfficer']) || (data.studentOfficer is string && data.studentOfficer.size() <= 200))
+        && (!data.keys().hasAll(['photoUrl']) || (data.photoUrl is string && data.photoUrl.size() <= 1048576)) // 1MB limit for base64
+        && data.menuDetails is string && data.menuDetails.size() <= 500
+        && data.amount is number && data.amount >= 0
+        && data.userId == request.auth.uid
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    match /distributions/{distributionId} {
+      allow create: if isSignedIn()
+                   && isValidId(distributionId)
+                   && isValidDistribution(incoming());
+
+      allow update: if isSignedIn()
+                   && isValidId(distributionId)
+                   && existing().userId == request.auth.uid
+                   && incoming().userId == existing().userId
+                   && incoming().createdAt == existing().createdAt
+                   && incoming().updatedAt == request.time
+                   && (
+                     // Logic for specific update actions if needed
+                     incoming().diff(existing()).affectedKeys().hasAny(['date', 'arrivalTime', 'recipient', 'studentOfficer', 'menuDetails', 'photoUrl', 'amount', 'updatedAt'])
+                   );
+
+      allow delete: if isSignedIn()
+                   && existing().userId == request.auth.uid;
+
+      allow get: if isSignedIn()
+                && existing().userId == request.auth.uid;
+
+      allow list: if isSignedIn()
+                 && resource.data.userId == request.auth.uid;
+    }
+
+    // Validation for Serving
+    function isValidServing(data) {
+      return data.keys().hasAll(['date', 'recipientName', 'amount', 'userId', 'createdAt'])
+        && data.keys().size() == 5
+        && data.date is string && data.date.size() <= 100
+        && data.recipientName is string && data.recipientName.size() <= 200
+        && data.amount is number && data.amount >= 0
+        && data.userId == request.auth.uid
+        && data.createdAt == request.time;
+    }
+
+    match /servings/{servingId} {
+      allow create: if isSignedIn()
+                   && isValidId(servingId)
+                   && isValidServing(incoming());
+
+      allow delete: if isSignedIn()
+                   && existing().userId == request.auth.uid;
+
+      allow get: if isSignedIn()
+                && existing().userId == request.auth.uid;
+
+      allow list: if isSignedIn()
+                 && resource.data.userId == request.auth.uid;
+    }
+  }
+}
