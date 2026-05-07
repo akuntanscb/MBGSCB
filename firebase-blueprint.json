@@ -14,6 +14,10 @@
           "type": "string",
           "description": "Time of arrival"
         },
+        "status": {
+          "type": "string",
+          "description": "Auto-calculated status: Tepat Waktu (06:00-12:00) or Terlambat (12:00-18:00)"
+        },
         "recipient": {
           "type": "string",
           "description": "Name of the tendik (staff) who received it"
@@ -58,11 +62,21 @@
           "type": "string",
           "format": "date-time"
         },
+        "time": {
+          "type": "string"
+        },
         "recipientName": {
           "type": "string"
         },
         "amount": {
           "type": "number"
+        },
+        "returnedAmount": {
+          "type": "number"
+        },
+        "qualityControl": {
+          "type": "string",
+          "enum": ["Baik", "Kurang", "Tidak Layak"]
         },
         "userId": {
           "type": "string"
@@ -70,9 +84,13 @@
         "createdAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
         }
       },
-      "required": ["date", "recipientName", "amount", "userId"]
+      "required": ["date", "time", "recipientName", "amount", "userId"]
     }
   },
   "firestore": {

@@ -126,5 +126,26 @@ export const distributionService = {
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, SERVING_COLLECTION);
     }
+  },
+
+  async updateServing(id: string, data: Partial<Serving>) {
+    try {
+      const docRef = doc(db, SERVING_COLLECTION, id);
+      await updateDoc(docRef, {
+        ...data,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${SERVING_COLLECTION}/${id}`);
+    }
+  },
+
+  async deleteServing(id: string) {
+    try {
+      const docRef = doc(db, SERVING_COLLECTION, id);
+      await deleteDoc(docRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `${SERVING_COLLECTION}/${id}`);
+    }
   }
 };

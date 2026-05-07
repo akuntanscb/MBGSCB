@@ -26,9 +26,10 @@ service cloud.firestore {
     // Validation for Distribution
     function isValidDistribution(data) {
       return data.keys().hasAll(['date', 'arrivalTime', 'recipient', 'menuDetails', 'amount', 'userId', 'createdAt', 'updatedAt'])
-        && (data.keys().size() >= 8 && data.keys().size() <= 11)
+        && (data.keys().size() >= 8 && data.keys().size() <= 12)
         && data.date is string && data.date.size() <= 100
         && data.arrivalTime is string && data.arrivalTime.size() <= 20
+        && (!data.keys().hasAll(['status']) || (data.status is string && data.status.size() <= 50))
         && data.recipient is string && data.recipient.size() <= 200
         && (!data.keys().hasAll(['studentOfficer']) || (data.studentOfficer is string && data.studentOfficer.size() <= 200))
         && (!data.keys().hasAll(['photoUrl']) || (data.photoUrl is string && data.photoUrl.size() <= 1048576)) // 1MB limit for base64
@@ -52,7 +53,7 @@ service cloud.firestore {
                    && incoming().updatedAt == request.time
                    && (
                      // Logic for specific update actions if needed
-                     incoming().diff(existing()).affectedKeys().hasAny(['date', 'arrivalTime', 'recipient', 'studentOfficer', 'menuDetails', 'photoUrl', 'amount', 'updatedAt'])
+                     incoming().diff(existing()).affectedKeys().hasAny(['date', 'arrivalTime', 'status', 'recipient', 'studentOfficer', 'menuDetails', 'photoUrl', 'amount', 'updatedAt'])
                    );
 
       allow delete: if isSignedIn()
@@ -67,19 +68,31 @@ service cloud.firestore {
 
     // Validation for Serving
     function isValidServing(data) {
-      return data.keys().hasAll(['date', 'recipientName', 'amount', 'userId', 'createdAt'])
-        && data.keys().size() == 5
+      return data.keys().hasAll(['date', 'time', 'recipientName', 'amount', 'userId', 'createdAt'])
+        && (data.keys().size() >= 6 && data.keys().size() <= 9)
         && data.date is string && data.date.size() <= 100
+        && data.time is string && data.time.size() <= 20
         && data.recipientName is string && data.recipientName.size() <= 200
         && data.amount is number && data.amount >= 0
-        && data.userId == request.auth.uid
-        && data.createdAt == request.time;
+        && (!data.keys().hasAll(['returnedAmount']) || (data.returnedAmount is number && data.returnedAmount >= 0))
+        && (!data.keys().hasAll(['qualityControl']) || (data.qualityControl in ['Baik', 'Kurang', 'Tidak Layak']))
+        && data.userId == request.auth.uid;
     }
 
     match /servings/{servingId} {
       allow create: if isSignedIn()
                    && isValidId(servingId)
-                   && isValidServing(incoming());
+                   && isValidServing(incoming())
+                   && incoming().createdAt == request.time;
+
+      allow update: if isSignedIn()
+                   && isValidId(servingId)
+                   && existing().userId == request.auth.uid
+                   && incoming().userId == existing().userId
+                   && incoming().createdAt == existing().createdAt
+                   && incoming().updatedAt == request.time
+                   && isValidServing(incoming())
+                   && incoming().diff(existing()).affectedKeys().hasAny(['date', 'time', 'recipientName', 'amount', 'returnedAmount', 'qualityControl', 'updatedAt']);
 
       allow delete: if isSignedIn()
                    && existing().userId == request.auth.uid;

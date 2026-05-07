@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ClipboardList, 
   BarChart3, 
@@ -23,8 +23,25 @@ import {
   ImagePlus,
   FileImage,
   Edit,
-  Trash2
+  Trash2,
+  PieChart as PieChartIcon,
+  ShieldCheck,
+  ChevronRight,
+  ArrowLeft,
+  Printer,
+  Download,
+  FileText
 } from 'lucide-react';
+import { 
+  PieChart, 
+  Pie, 
+  Cell, 
+  ResponsiveContainer, 
+  Tooltip, 
+  Legend 
+} from 'recharts';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, signInWithGoogle, logout } from './lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
@@ -39,6 +56,19 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const calculateStatus = (time: string) => {
+  if (!time) return '';
+  const [hours, minutes] = time.split(':').map(Number);
+  const totalMinutes = hours * 60 + (minutes || 0);
+  
+  if (totalMinutes >= 6 * 60 && totalMinutes < 12 * 60) {
+    return 'Tepat Waktu';
+  } else if (totalMinutes >= 12 * 60 && totalMinutes <= 18 * 60) {
+    return 'Terlambat';
+  }
+  return '';
+};
+
 type Tab = 'input' | 'pembagian' | 'laporan';
 
 export default function App() {
@@ -49,6 +79,7 @@ export default function App() {
   const [servings, setServings] = useState<Serving[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingDistribution, setEditingDistribution] = useState<Distribution | null>(null);
+  const [editingServing, setEditingServing] = useState<Serving | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -77,6 +108,17 @@ export default function App() {
     if (window.confirm('Apakah Anda yakin ingin menghapus data distribusi ini?')) {
       try {
         await distributionService.deleteDistribution(id);
+        setRefreshKey(prev => prev + 1);
+      } catch (error) {
+        alert('Gagal menghapus data');
+      }
+    }
+  };
+
+  const handleDeleteServing = async (id: string) => {
+    if (window.confirm('Apakah Anda yakin ingin menghapus data pembagian ini?')) {
+      try {
+        await distributionService.deleteServing(id);
         setRefreshKey(prev => prev + 1);
       } catch (error) {
         alert('Gagal menghapus data');
@@ -228,12 +270,36 @@ export default function App() {
               >
                 <div className="grid grid-cols-12 gap-8">
                   <div className="col-span-12 lg:col-span-5">
-                    <PembagianForm onSuccess={() => setRefreshKey(prev => prev + 1)} />
+                    <PembagianForm 
+                      onSuccess={() => setRefreshKey(prev => prev + 1)} 
+                      distributions={distributions}
+                      servings={servings}
+                    />
                   </div>
                   <div className="col-span-12 lg:col-span-7">
-                    <RecentServingActivity data={servings} />
+                    <RecentServingActivity 
+                      data={servings} 
+                      onEdit={(item) => setEditingServing(item)}
+                      onDelete={handleDeleteServing}
+                    />
                   </div>
                 </div>
+
+                {/* Edit Modal Serving */}
+                <AnimatePresence>
+                  {editingServing && (
+                    <EditServingModal 
+                      serving={editingServing}
+                      onClose={() => setEditingServing(null)}
+                      distributions={distributions}
+                      servings={servings}
+                      onSuccess={() => {
+                        setEditingServing(null);
+                        setRefreshKey(prev => prev + 1);
+                      }}
+                    />
+                  )}
+                </AnimatePresence>
               </motion.div>
             )}
 
@@ -279,27 +345,67 @@ export default function App() {
 
 // ... existing components (LandingPage, DistributionForm, RecentActivity) ...
 
-function PembagianForm({ onSuccess }: { onSuccess: () => void }) {
+function PembagianForm({ 
+  onSuccess, 
+  distributions, 
+  servings 
+}: { 
+  onSuccess: () => void, 
+  distributions: Distribution[], 
+  servings: Serving[] 
+}) {
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
+    time: format(new Date(), 'HH:mm'),
     recipientName: '',
     amount: 1,
+    returnedAmount: 0,
+    qualityControl: 'Baik' as 'Baik' | 'Kurang' | 'Tidak Layak',
   });
+
+  // Calculate total received for this date
+  const totalReceivedForDate = distributions
+    .filter(d => d.date === formData.date)
+    .reduce((sum, d) => sum + d.amount, 0);
+
+  // Calculate total served for this date (excluding current form if it was an edit, but here it's only create)
+  const totalServedForDate = servings
+    .filter(s => s.date === formData.date)
+    .reduce((sum, s) => sum + s.amount, 0);
+
+  const availableStock = totalReceivedForDate - totalServedForDate;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (formData.amount > availableStock) {
+      alert(`Jumlah yang diberikan (${formData.amount}) melebihi stok yang tersedia (${availableStock}) untuk tanggal ini.`);
+      return;
+    }
+
+    if (formData.returnedAmount > formData.amount) {
+      alert(`Jumlah kembali (${formData.returnedAmount}) tidak boleh melebihi jumlah yang diberikan (${formData.amount}).`);
+      return;
+    }
+
     setLoading(true);
     try {
       await distributionService.createServing({
         ...formData,
         amount: Number(formData.amount),
+        returnedAmount: Number(formData.returnedAmount),
       });
       setFormData({
         date: format(new Date(), 'yyyy-MM-dd'),
+        time: format(new Date(), 'HH:mm'),
         recipientName: '',
         amount: 1,
+        returnedAmount: 0,
+        qualityControl: 'Baik',
       });
+      setStep(1);
       onSuccess();
     } catch (error) {
       alert('Gagal menyimpan data pembagian');
@@ -310,65 +416,235 @@ function PembagianForm({ onSuccess }: { onSuccess: () => void }) {
 
   return (
     <div className="glass-card p-6">
-      <h3 className="text-lg font-bold mb-6 flex items-center gap-3">
-        <div className="w-1 h-6 bg-blue-600 rounded-full"></div>
-        Input Proses Pembagian
-      </h3>
-      <form onSubmit={handleSubmit} className="space-y-5">
-        <div>
-          <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-            Tanggal & Hari
-          </label>
-          <input 
-            type="date" 
-            required
-            value={formData.date}
-            onChange={e => setFormData({ ...formData, date: e.target.value })}
-            className="input-field"
-          />
-        </div>
+      <div className="flex items-center justify-between mb-6">
+        <h3 className="text-lg font-bold flex items-center gap-3">
+          <div className="w-1 h-6 bg-blue-600 rounded-full"></div>
+          {step === 1 ? 'Step 1: Check Kualitas' : 'Step 2: Detail Pembagian'}
+        </h3>
+        
+        {step === 2 && (
+          <button 
+            type="button"
+            onClick={() => setStep(1)}
+            className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+          >
+            <ArrowLeft size={12} />
+            Ubah QC
+          </button>
+        )}
+      </div>
 
-        <div>
-          <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-            Nama Penerima
-          </label>
-          <input 
-            type="text" 
-            required
-            placeholder="Ketik nama penerima manfaat..."
-            value={formData.recipientName}
-            onChange={e => setFormData({ ...formData, recipientName: e.target.value })}
-            className="input-field"
-          />
-        </div>
+      <AnimatePresence mode="wait">
+        {step === 1 ? (
+          <motion.div 
+            key="step1"
+            initial={{ opacity: 0, x: -10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 10 }}
+            className="space-y-6"
+          >
+            <div className="p-5 bg-slate-50 border border-slate-100 rounded-2xl">
+              <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 text-center">
+                Bagaimana Kondisi Makanan Saat Ini?
+              </label>
+              <div className="grid grid-cols-1 gap-3">
+                {['Baik', 'Kurang', 'Tidak Layak'].map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, qualityControl: option as any })}
+                    className={cn(
+                      "group relative py-4 px-5 rounded-xl text-sm font-bold border transition-all flex items-center justify-between",
+                      formData.qualityControl === option
+                        ? option === 'Baik' ? "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm" :
+                          option === 'Kurang' ? "bg-amber-50 text-amber-700 border-amber-200 shadow-sm" :
+                          "bg-red-50 text-red-700 border-red-200 shadow-sm"
+                        : "bg-white text-slate-400 border-slate-100 hover:border-slate-200"
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "w-3 h-3 rounded-full shadow-inner",
+                        option === 'Baik' ? "bg-emerald-500" : option === 'Kurang' ? "bg-amber-500" : "bg-red-500"
+                      )}></div>
+                      <span className="tracking-tight">{option}</span>
+                    </div>
+                    {formData.qualityControl === option && (
+                      <CheckCircle2 size={16} className={cn(
+                        option === 'Baik' ? "text-emerald-600" : option === 'Kurang' ? "text-amber-600" : "text-red-600"
+                      )} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-        <div>
-          <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-            Jumlah yang Diberikan
-          </label>
-          <input 
-            type="number" 
-            min="1"
-            required
-            value={formData.amount}
-            onChange={e => setFormData({ ...formData, amount: parseInt(e.target.value) || 0 })}
-            className="input-field"
-          />
-        </div>
+            <button 
+              type="button"
+              onClick={() => setStep(2)}
+              className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all active:scale-95 flex items-center justify-center gap-2 group"
+            >
+              Lanjut Isi Data
+              <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
+            </button>
+          </motion.div>
+        ) : (
+          <motion.div
+            key="step2"
+            initial={{ opacity: 0, x: 10 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -10 }}
+          >
+            <form onSubmit={handleSubmit} className="space-y-5">
+               <div className={cn(
+                "p-3 rounded-lg flex items-center justify-between border mb-2",
+                formData.qualityControl === 'Baik' ? "bg-emerald-50 border-emerald-100" :
+                formData.qualityControl === 'Kurang' ? "bg-amber-50 border-amber-100" :
+                "bg-red-50 border-red-100"
+              )}>
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={14} className={cn(
+                    formData.qualityControl === 'Baik' ? "text-emerald-600" :
+                    formData.qualityControl === 'Kurang' ? "text-amber-600" :
+                    "text-red-600"
+                  )} />
+                  <span className={cn(
+                    "text-[10px] font-bold uppercase tracking-wider",
+                     formData.qualityControl === 'Baik' ? "text-emerald-700" :
+                     formData.qualityControl === 'Kurang' ? "text-amber-700" :
+                     "text-red-700"
+                  )}>
+                    QC Terverifikasi: {formData.qualityControl}
+                  </span>
+                </div>
+              </div>
 
-        <button 
-          type="submit" 
-          disabled={loading}
-          className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg mt-4 shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-colors active:scale-95 disabled:opacity-50"
-        >
-          {loading ? 'Mengirim Data...' : 'Simpan Data Pembagian'}
-        </button>
-      </form>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                    Tanggal
+                  </label>
+                  <input 
+                    type="date" 
+                    required
+                    value={formData.date}
+                    onChange={e => setFormData({ ...formData, date: e.target.value })}
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                    Jam Pembagian
+                  </label>
+                  <input 
+                    type="time" 
+                    required
+                    value={formData.time}
+                    onChange={e => setFormData({ ...formData, time: e.target.value })}
+                    className="input-field"
+                  />
+                </div>
+              </div>
+
+              <div>
+                {totalReceivedForDate > 0 ? (
+                  <p className="text-[10px] text-slate-500 mt-1 ml-1 italic">
+                    Total masuk: <span className="font-bold text-emerald-600">{totalReceivedForDate}</span> | Terbagi: <span className="font-bold text-blue-600">{totalServedForDate}</span>
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-red-500 mt-1 ml-1 italic font-medium">
+                    Peringatan: Belum ada data distribusi masuk pada tanggal ini.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                  Nama Penerima
+                </label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Ketik nama penerima manfaat..."
+                  value={formData.recipientName}
+                  onChange={e => setFormData({ ...formData, recipientName: e.target.value })}
+                  className="input-field"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                    Jumlah Diberikan
+                  </label>
+                  <input 
+                    type="number" 
+                    min="1"
+                    max={availableStock > 0 ? availableStock : 1}
+                    required
+                    value={formData.amount}
+                    onChange={e => setFormData({ ...formData, amount: parseInt(e.target.value) || 0 })}
+                    className={cn(
+                      "input-field font-bold",
+                      formData.amount > availableStock ? "text-red-600 border-red-200 bg-red-50" : "text-blue-700"
+                    )}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                    Jumlah Kembali
+                  </label>
+                  <input 
+                    type="number" 
+                    min="0"
+                    max={formData.amount}
+                    value={formData.returnedAmount}
+                    onChange={e => setFormData({ ...formData, returnedAmount: parseInt(e.target.value) || 0 })}
+                    className="input-field font-bold text-amber-600"
+                  />
+                </div>
+              </div>
+              
+              {availableStock > 0 && (
+                <p className="text-[10px] text-slate-400 mt-0 ml-1">
+                  Maksimal pemberian: <span className="font-bold">{availableStock}</span> unit
+                </p>
+              )}
+
+              <button 
+                type="submit" 
+                disabled={loading || availableStock <= 0 || formData.amount > availableStock}
+                className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl mt-4 shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-3"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <HandHeart size={18} />
+                    Simpan Pembagian
+                  </>
+                )}
+              </button>
+            </form>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function RecentServingActivity({ data }: { data: Serving[] }) {
+function RecentServingActivity({ 
+  data, 
+  onEdit, 
+  onDelete 
+}: { 
+  data: Serving[], 
+  onEdit: (item: Serving) => void,
+  onDelete: (id: string) => void
+}) {
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
       <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
@@ -390,19 +666,55 @@ function RecentServingActivity({ data }: { data: Serving[] }) {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: idx * 0.05 }}
-                className="p-5 hover:bg-slate-50 transition-colors flex items-center gap-5"
+                className="p-5 hover:bg-slate-50 transition-colors flex items-center gap-5 group"
               >
                 <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
                   <HandHeart size={18} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-center mb-0.5">
-                    <p className="text-sm font-bold text-slate-900 truncate">{item.recipientName}</p>
-                    <span className="text-[10px] font-bold text-slate-400">{item.date}</span>
+                    <p className="text-sm font-bold text-slate-900 truncate pr-2">{item.recipientName}</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
+                        {item.date} • {item.time}
+                      </span>
+                      <div className="hidden group-hover:flex items-center gap-1">
+                        <button 
+                          onClick={() => onEdit(item)}
+                          className="p-1 px-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
+                          title="Edit"
+                        >
+                          <Edit size={12} />
+                        </button>
+                        <button 
+                          onClick={() => onDelete(item.id!)}
+                          className="p-1 px-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all"
+                          title="Hapus"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    Menerima <span className="font-bold text-blue-600">{item.amount} MBG</span>
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-slate-500 flex items-center gap-2">
+                      Terbagi <span className="font-bold text-blue-600">{item.amount}</span> 
+                      {item.returnedAmount ? <span className="text-amber-600 font-medium">(Kembali: {item.returnedAmount})</span> : null}
+                      {item.qualityControl && (
+                        <span className={cn(
+                          "ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase border",
+                          item.qualityControl === 'Baik' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
+                          item.qualityControl === 'Kurang' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                          "bg-red-50 text-red-600 border-red-100"
+                        )}>
+                          QC: {item.qualityControl}
+                        </span>
+                      )}
+                    </p>
+                    <span className="text-[10px] font-bold text-emerald-600">
+                      Net: {item.amount - (item.returnedAmount || 0)} MBG
+                    </span>
+                  </div>
                 </div>
               </motion.div>
             ))}
@@ -414,24 +726,237 @@ function RecentServingActivity({ data }: { data: Serving[] }) {
 }
 
 function ReportSection({ distributions, servings }: { distributions: Distribution[], servings: Serving[] }) {
+  const reportRef = useRef<HTMLDivElement>(null);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const exportToPDF = async () => {
+    if (!reportRef.current) return;
+    
+    setIsExporting(true);
+    try {
+      // 1. Inject compatibility styles to ACTUAL document before capture
+      const compatStyle = document.createElement('style');
+      compatStyle.id = 'pdf-compat-style';
+      compatStyle.innerHTML = `
+        :root {
+          /* Force standard HEX for all possible Tailwind v4 variables used in the app */
+          --color-slate-50: #f8fafc !important;
+          --color-slate-100: #f1f5f9 !important;
+          --color-slate-200: #e2e8f0 !important;
+          --color-slate-300: #cbd5e1 !important;
+          --color-slate-400: #94a3b8 !important;
+          --color-slate-500: #64748b !important;
+          --color-slate-600: #475569 !important;
+          --color-slate-700: #334155 !important;
+          --color-slate-800: #1e293b !important;
+          --color-slate-900: #0f172a !important;
+          --color-blue-50: #eff6ff !important;
+          --color-blue-600: #2563eb !important;
+          --color-emerald-50: #ecfdf5 !important;
+          --color-emerald-500: #10b981 !important;
+          --color-emerald-600: #059669 !important;
+          --color-amber-500: #f59e0b !important;
+          --color-red-500: #ef4444 !important;
+          
+          /* Also override some internal CSS variables that might use oklch */
+          --tw-border-opacity: 1 !important;
+          --tw-text-opacity: 1 !important;
+          --tw-bg-opacity: 1 !important;
+        }
+        
+        /* Force inherit plain colors to avoid oklch leaks */
+        * {
+          border-color: #e2e8f0 !important;
+          outline-color: #e2e8f0 !important;
+        }
+      `;
+      document.head.appendChild(compatStyle);
+
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 2,
+        useCORS: true,
+        logging: true, // Enable logging to see where it fails if it does
+        backgroundColor: '#ffffff',
+        onclone: (clonedDoc) => {
+          const reportRoot = clonedDoc.getElementById('pdf-report-root');
+          if (reportRoot) {
+            reportRoot.style.width = '1100px';
+            reportRoot.style.padding = '40px';
+            reportRoot.style.backgroundColor = '#ffffff';
+          }
+
+          // 2. Aggressive DOM Sanitization
+          const allEl = clonedDoc.querySelectorAll('*');
+          const clonedView = clonedDoc.defaultView || window;
+          
+          allEl.forEach((node: any) => {
+            const el = node as HTMLElement;
+            const style = clonedView.getComputedStyle(el);
+            
+            // Check for oklch in crucial properties
+            const colorProps = ['color', 'backgroundColor', 'borderColor', 'fill', 'stroke', 'stopColor'];
+            colorProps.forEach(prop => {
+              const val = (el.style as any)[prop] || style.getPropertyValue(prop);
+              if (val && (val.includes('oklch') || val.includes('oklab'))) {
+                // Force safe fallbacks based on common classes or general dark/light context
+                if (prop === 'backgroundColor') {
+                  if (el.classList.contains('bg-slate-50')) (el.style as any)[prop] = '#f8fafc';
+                  else (el.style as any)[prop] = '#ffffff';
+                } else if (prop === 'color') {
+                  if (el.classList.contains('text-slate-900')) (el.style as any)[prop] = '#0f172a';
+                  else if (el.classList.contains('text-blue-600')) (el.style as any)[prop] = '#2563eb';
+                  else if (el.classList.contains('text-emerald-600')) (el.style as any)[prop] = '#059669';
+                  else (el.style as any)[prop] = '#334155';
+                } else {
+                  (el.style as any)[prop] = '#94a3b8'; // Generic slate-400 fallback
+                }
+              }
+            });
+
+            // Ensure charts SVGs don't use oklch
+            if (el.tagName === 'path' || el.tagName === 'circle' || el.tagName === 'rect') {
+              const fill = el.getAttribute('fill');
+              const stroke = el.getAttribute('stroke');
+              if (fill && fill.includes('okl')) el.setAttribute('fill', '#94a3b8');
+              if (stroke && stroke.includes('okl')) el.setAttribute('stroke', '#cbd5e1');
+            }
+
+            // Ensure visibility for tables
+            if (el.tagName === 'TABLE' || el.classList.contains('divide-y')) {
+              el.style.visibility = 'visible';
+              el.style.opacity = '1';
+              el.style.backgroundColor = '#ffffff';
+            }
+
+            el.style.animation = 'none';
+            el.style.transition = 'none';
+          });
+
+          // Fixed dimensions for charts
+          const chartContainers = clonedDoc.querySelectorAll('.recharts-responsive-container');
+          chartContainers.forEach((container: any) => {
+            if (container.closest('.pdf-hide-diagram')) {
+              container.style.display = 'none';
+              return;
+            }
+            container.style.width = '550px';
+            container.style.height = '350px';
+            container.style.display = 'block';
+            
+            const svg = container.querySelector('svg');
+            if (svg) {
+              svg.setAttribute('width', '550');
+              svg.setAttribute('height', '350');
+              svg.style.width = '550px';
+              svg.style.height = '350px';
+              
+              // Recalculate viewbox if necessary or force standard
+              if (!svg.getAttribute('viewBox')) {
+                svg.setAttribute('viewBox', '0 0 550 350');
+              }
+            }
+          });
+
+          // Global style sterilization
+          const styles = clonedDoc.querySelectorAll('style');
+          styles.forEach(s => {
+            s.innerHTML = s.innerHTML.replace(/okl[ch|ab]\([^)]+\)/g, '#475569');
+          });
+        }
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`Laporan_MBG_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
+      
+      document.getElementById('pdf-compat-style')?.remove();
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      document.getElementById('pdf-compat-style')?.remove();
+      alert('Gagal membuat PDF. Masalah format warna terdeteksi. Silakan coba lagi.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const statsByMenu = distributions.reduce((acc, curr) => {
     acc[curr.menuDetails] = (acc[curr.menuDetails] || 0) + curr.amount;
     return acc;
   }, {} as Record<string, number>);
 
-  const statsByTendik = distributions.reduce((acc, curr) => {
-    acc[curr.recipient] = (acc[curr.recipient] || 0) + curr.amount;
+  const statsByStatus = distributions.reduce((acc, curr) => {
+    if (curr.status) {
+      acc[curr.status] = (acc[curr.status] || 0) + curr.amount;
+    }
     return acc;
   }, {} as Record<string, number>);
+
+  const statsByQC = servings.reduce((acc, curr) => {
+    if (curr.qualityControl) {
+      acc[curr.qualityControl] = (acc[curr.qualityControl] || 0) + curr.amount;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+
+  const statusData = Object.entries(statsByStatus).map(([name, value]) => ({ name, value }));
+  const qcData = Object.entries(statsByQC).map(([name, value]) => ({ name, value }));
+
+  const STATUS_COLORS = {
+    'Tepat Waktu': '#10b981', // emerald-500
+    'Terlambat': '#ef4444',   // red-500
+  };
+
+  const QC_COLORS = {
+    'Baik': '#10b981',        // emerald-500
+    'Kurang': '#f59e0b',      // amber-500
+    'Tidak Layak': '#ef4444'  // red-500
+  };
 
   const totalDistributed = distributions.reduce((sum, item) => sum + item.amount, 0);
   const totalServed = servings.reduce((sum, item) => sum + item.amount, 0);
   const stockRemaining = totalDistributed - totalServed;
 
   return (
-    <div className="space-y-10">
-      {/* Overview Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
+    <div className="space-y-10 pb-20">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+        <div>
+          <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+            <FileText className="text-blue-600" size={24} />
+            Summary Report & Analytics
+          </h3>
+          <p className="text-xs text-slate-400 font-medium italic mt-1">
+            Data rekapitulasi distribusi dan pembagian per {format(new Date(), 'dd MMMM yyyy')}
+          </p>
+        </div>
+        <button 
+          onClick={exportToPDF}
+          disabled={isExporting}
+          className="flex items-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/10 active:scale-95 disabled:opacity-50"
+        >
+          {isExporting ? (
+            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+          ) : (
+            <Download size={16} />
+          )}
+          {isExporting ? 'Generating PDF...' : 'Download PDF Report'}
+        </button>
+      </div>
+
+      <div ref={reportRef} id="pdf-report-root" className="space-y-10 p-1 sm:p-0">
+        {/* Print Header (Only visible in PDF/Print) */}
+        <div className="hidden print:block mb-8 border-b-2 border-slate-900 pb-4">
+          <h1 className="text-2xl font-bold uppercase tracking-tight text-slate-900">Laporan Monitoring MBG</h1>
+          <p className="text-sm font-medium text-slate-500">Dicetak pada: {format(new Date(), 'dd/MM/yyyy HH:mm')}</p>
+        </div>
+
+        {/* Overview Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
           <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Total Stok Masuk</p>
           <div className="flex items-end gap-2">
@@ -462,37 +987,201 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
         </div>
       </div>
 
+      {/* Summary Narrative (Redaksi Satu Baris) */}
+      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+        <p className="text-xs font-medium text-slate-700 leading-relaxed">
+          <span className="font-bold">Analisis Ringkas:</span> Total stok distribusi masuk sebanyak <span className="font-bold text-emerald-600">{totalDistributed} MBG</span> telah berhasil diproses dan dibagikan kepada siswa sebanyak <span className="font-bold text-blue-600">{totalServed} porsi</span>, dengan sisa inventori tercatat sebanyak <span className="font-bold text-amber-600">{stockRemaining} unit</span> untuk periode pelaporan ini.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Status Chart */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <Clock className="text-emerald-600" size={18} />
+              <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Ketepatan Waktu Tiba</h4>
+            </div>
+          </div>
+          
+          <div className="flex flex-col gap-4">
+            {/* Chart - Hidden in PDF Export via onclone/class */}
+            <div className="h-[250px] w-full pdf-hide-diagram">
+              {statusData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={statusData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      {statusData.map((entry: any, index) => (
+                        <Cell key={`cell-${index}`} fill={STATUS_COLORS[entry.name as keyof typeof STATUS_COLORS] || '#cbd5e1'} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                    />
+                    <Legend verticalAlign="bottom" height={36}/>
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                  <PieChartIcon size={40} className="mb-2 opacity-20" />
+                  <p className="text-xs font-medium">Belum ada data status</p>
+                </div>
+              )}
+            </div>
+
+            {/* Text Description - Visible in PDF Export/UI */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-50 pb-2">Keterangan Ketepatan Waktu</p>
+              {statusData.length > 0 ? (
+                <div className="grid grid-cols-1 gap-2">
+                  {statusData.map((item) => {
+                    const percentage = totalDistributed > 0 ? ((item.value / totalDistributed) * 100).toFixed(1) : 0;
+                    return (
+                      <div key={item.name} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[item.name as keyof typeof STATUS_COLORS] }}></div>
+                          <span className="text-xs font-bold text-slate-700">{item.name}</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-mono font-bold text-slate-900">{item.value} MBG</span>
+                          <span className="text-[10px] text-slate-400 ml-2">({percentage}%)</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[10px] italic text-slate-400">Data tidak tersedia</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* QC Chart */}
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="text-blue-600" size={18} />
+              <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Rekap Quality Control</h4>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-4">
+            {/* Chart - Hidden in PDF Export */}
+            <div className="h-[250px] w-full pdf-hide-diagram">
+              {qcData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={qcData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={80}
+                      paddingAngle={5}
+                      dataKey="value"
+                    >
+                      {qcData.map((entry: any, index) => (
+                        <Cell key={`cell-${index}`} fill={QC_COLORS[entry.name as keyof typeof QC_COLORS] || '#cbd5e1'} />
+                      ))}
+                    </Pie>
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                    />
+                    <Legend verticalAlign="bottom" height={36}/>
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-slate-300">
+                  <PieChartIcon size={40} className="mb-2 opacity-20" />
+                  <p className="text-xs font-medium">Belum ada data QC</p>
+                </div>
+              )}
+            </div>
+
+            {/* Text Description */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-50 pb-2">Keterangan Kualitas Makanan</p>
+              {qcData.length > 0 ? (
+                <div className="grid grid-cols-1 gap-2">
+                  {qcData.map((item) => {
+                    const percentage = totalServed > 0 ? ((item.value / totalServed) * 100).toFixed(1) : 0;
+                    return (
+                      <div key={item.name} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-100">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: QC_COLORS[item.name as keyof typeof QC_COLORS] }}></div>
+                          <span className="text-xs font-bold text-slate-700">{item.name}</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-xs font-mono font-bold text-slate-900">{item.value} Porsi</span>
+                          <span className="text-[10px] text-slate-400 ml-2">({percentage}%)</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-[10px] italic text-slate-400">Data tidak tersedia</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-12 gap-8">
         {/* Reports by Menu */}
-        <div className="col-span-12 lg:col-span-12 bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+        <div className="col-span-12 lg:col-span-6 bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
             <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Akumulasi Stok Per Menu</h4>
           </div>
-          <table className="w-full text-sm text-left">
+          <table className="w-full text-sm text-left font-[Inter]">
             <thead>
               <tr className="text-slate-400 border-b border-slate-100">
                 <th className="px-6 py-4 font-bold text-[10px] uppercase tracking-widest">Rincian Menu</th>
                 <th className="px-6 py-4 font-bold text-[10px] uppercase tracking-widest text-right">Volume</th>
-                <th className="px-6 py-4 font-bold text-[10px] uppercase tracking-widest text-right">Progress Stok</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {Object.entries(statsByMenu).sort((a,b) => b[1] - a[1]).map(([menu, amount]) => (
                 <tr key={menu} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-6 py-4 font-bold text-slate-700 max-w-xs truncate">{menu}</td>
+                  <td className="px-6 py-4 font-bold text-slate-700 max-w-[180px] truncate">{menu}</td>
                   <td className="px-6 py-4 text-right font-mono font-bold text-emerald-600">{amount}</td>
-                  <td className="px-6 py-4 text-right w-64">
-                    <div className="flex items-center gap-3">
-                      <div className="h-1.5 flex-1 bg-slate-100 rounded-full overflow-hidden">
-                        <motion.div 
-                          initial={{ width: 0 }}
-                          animate={{ width: `${(amount / totalDistributed) * 100}%` }}
-                          className="h-full bg-emerald-500"
-                        />
-                      </div>
-                      <span className="text-[10px] font-bold text-emerald-500 w-8">{((amount / totalDistributed) * 100).toFixed(0)}%</span>
-                    </div>
-                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Reports by Recipient (Tendik) */}
+        <div className="col-span-12 lg:col-span-6 bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+            <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Recap Pembagian Per Nama</h4>
+          </div>
+          <table className="w-full text-sm text-left">
+            <thead>
+              <tr className="text-slate-400 border-b border-slate-100">
+                <th className="px-6 py-4 font-bold text-[10px] uppercase tracking-widest">Penerima Manfaat</th>
+                <th className="px-6 py-4 font-bold text-[10px] uppercase tracking-widest text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {Object.entries(
+                servings.reduce((acc, curr) => {
+                  acc[curr.recipientName] = (acc[curr.recipientName] || 0) + curr.amount;
+                  return acc;
+                }, {} as Record<string, number>)
+              ).sort((a,b) => b[1] - a[1]).map(([name, amount]) => (
+                <tr key={name} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-6 py-4 font-bold text-slate-700">{name}</td>
+                  <td className="px-6 py-4 text-right font-mono font-bold text-blue-600">{amount}</td>
                 </tr>
               ))}
             </tbody>
@@ -573,6 +1262,7 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
         </div>
       </div>
     </div>
+  </div>
   );
 }
 
@@ -664,11 +1354,13 @@ function DistributionForm({ onSuccess }: { onSuccess: () => void }) {
     e.preventDefault();
     setLoading(true);
     try {
+      const status = calculateStatus(formData.arrivalTime);
       await distributionService.createDistribution({
         ...formData,
+        status,
         amount: Number(formData.amount),
-        studentOfficer: formData.studentOfficer || undefined,
-        photoUrl: formData.photoUrl || undefined
+        studentOfficer: formData.studentOfficer || "",
+        photoUrl: formData.photoUrl || ""
       });
       setFormData({
         date: format(new Date(), 'yyyy-MM-dd'),
@@ -725,6 +1417,15 @@ function DistributionForm({ onSuccess }: { onSuccess: () => void }) {
               onChange={e => setFormData({ ...formData, arrivalTime: e.target.value })}
               className="input-field"
             />
+            {formData.arrivalTime && (
+              <p className={cn(
+                "text-[10px] mt-1 ml-1 font-bold italic",
+                calculateStatus(formData.arrivalTime) === 'Tepat Waktu' ? "text-emerald-600" : 
+                calculateStatus(formData.arrivalTime) === 'Terlambat' ? "text-red-600" : "text-slate-400"
+              )}>
+                Ketentuan: {calculateStatus(formData.arrivalTime) || 'Luar Jam Kerja'}
+              </p>
+            )}
           </div>
         </div>
 
@@ -907,7 +1608,7 @@ function RecentActivity({
                     </p>
                     <div className="flex items-center gap-2">
                        <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
-                        {item.date}
+                        {item.date} • {item.arrivalTime}
                       </span>
                       <div className="hidden group-hover:flex items-center gap-1">
                         <button 
@@ -939,6 +1640,14 @@ function RecentActivity({
                     <div className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest">
                       Terkirim
                     </div>
+                    {item.status && (
+                      <div className={cn(
+                        "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border",
+                        item.status === 'Tepat Waktu' ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-red-50 text-red-700 border-red-100"
+                      )}>
+                        {item.status}
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -992,11 +1701,13 @@ function EditDistributionModal({
     e.preventDefault();
     setLoading(true);
     try {
-      await distributionService.updateDistribution(distribution.id, {
+      const status = calculateStatus(formData.arrivalTime);
+      await distributionService.updateDistribution(distribution.id!, {
         ...formData,
+        status,
         amount: Number(formData.amount),
-        studentOfficer: formData.studentOfficer || undefined,
-        photoUrl: formData.photoUrl || undefined
+        studentOfficer: formData.studentOfficer || "",
+        photoUrl: formData.photoUrl || ""
       });
       onSuccess();
     } catch (error) {
@@ -1040,6 +1751,15 @@ function EditDistributionModal({
             <div>
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 ml-1">Jam Tiba</label>
               <input type="time" required value={formData.arrivalTime} onChange={e => setFormData({ ...formData, arrivalTime: e.target.value })} className="input-field" />
+              {formData.arrivalTime && (
+                <p className={cn(
+                  "text-[10px] mt-1 font-bold italic",
+                  calculateStatus(formData.arrivalTime) === 'Tepat Waktu' ? "text-emerald-600" : 
+                  calculateStatus(formData.arrivalTime) === 'Terlambat' ? "text-red-600" : "text-slate-400"
+                )}>
+                  Ketentuan: {calculateStatus(formData.arrivalTime) || 'Luar Jam Kerja'}
+                </p>
+              )}
             </div>
           </div>
 
@@ -1088,6 +1808,245 @@ function EditDistributionModal({
             </button>
           </div>
         </form>
+      </motion.div>
+    </div>
+  );
+}
+
+function EditServingModal({ 
+  serving, 
+  onClose, 
+  onSuccess,
+  distributions,
+  servings
+}: { 
+  serving: Serving, 
+  onClose: () => void, 
+  onSuccess: () => void,
+  distributions: Distribution[],
+  servings: Serving[]
+}) {
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState(1);
+  const [formData, setFormData] = useState({
+    date: serving.date,
+    time: serving.time || format(new Date(), 'HH:mm'),
+    recipientName: serving.recipientName,
+    amount: serving.amount,
+    returnedAmount: serving.returnedAmount || 0,
+    qualityControl: serving.qualityControl || 'Baik' as 'Baik' | 'Kurang' | 'Tidak Layak',
+  });
+
+  // Calculate total received for this date
+  const totalReceivedForDate = distributions
+    .filter(d => d.date === formData.date)
+    .reduce((sum, d) => sum + d.amount, 0);
+
+  // Calculate total served for this date (excluding current serving being edited)
+  const totalServedForOthers = servings
+    .filter(s => s.date === formData.date && s.id !== serving.id)
+    .reduce((sum, s) => sum + s.amount, 0);
+
+  const availableStock = totalReceivedForDate - totalServedForOthers;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (formData.amount > availableStock) {
+      alert(`Jumlah yang diberikan (${formData.amount}) melebihi stok yang tersedia (${availableStock}) untuk tanggal ini.`);
+      return;
+    }
+
+    if (formData.returnedAmount > formData.amount) {
+      alert(`Jumlah kembali (${formData.returnedAmount}) tidak boleh melebihi jumlah yang diberikan (${formData.amount}).`);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await distributionService.updateServing(serving.id!, {
+        ...formData,
+        amount: Number(formData.amount),
+        returnedAmount: Number(formData.returnedAmount),
+      });
+      onSuccess();
+    } catch (error) {
+      alert('Gagal memperbarui data pembagian');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+      />
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        className="relative bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden"
+      >
+        <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+          <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+            <Edit size={20} className="text-blue-600" />
+            {step === 1 ? 'Edit Quality Check' : 'Edit Detail Pembagian'}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <XCircle size={24} />
+          </button>
+        </div>
+        
+        <div className="p-6">
+          <AnimatePresence mode="wait">
+            {step === 1 ? (
+              <motion.div
+                key="edit-step1"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="space-y-6"
+              >
+                <div className="p-5 bg-slate-50 border border-slate-100 rounded-2xl">
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-widest mb-4 text-center">
+                    Verifikasi Ulang Kualitas
+                  </label>
+                  <div className="grid grid-cols-1 gap-3">
+                    {['Baik', 'Kurang', 'Tidak Layak'].map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, qualityControl: option as any })}
+                        className={cn(
+                          "relative py-4 px-5 rounded-xl text-sm font-bold border transition-all flex items-center justify-between",
+                          formData.qualityControl === option
+                            ? option === 'Baik' ? "bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm" :
+                              option === 'Kurang' ? "bg-amber-50 text-amber-700 border-amber-200 shadow-sm" :
+                              "bg-red-50 text-red-700 border-red-200 shadow-sm"
+                            : "bg-white text-slate-400 border-slate-100 hover:border-slate-200"
+                        )}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={cn(
+                            "w-3 h-3 rounded-full shadow-inner",
+                            option === 'Baik' ? "bg-emerald-500" : option === 'Kurang' ? "bg-amber-500" : "bg-red-500"
+                          )}></div>
+                          <span>{option}</span>
+                        </div>
+                        {formData.qualityControl === option && (
+                          <CheckCircle2 size={16} className={cn(
+                            option === 'Baik' ? "text-emerald-600" : option === 'Kurang' ? "text-amber-600" : "text-red-600"
+                          )} />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button 
+                  type="button"
+                  onClick={() => setStep(2)}
+                  className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-xl shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2 group"
+                >
+                  Lanjut ke Detail
+                  <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
+                </button>
+              </motion.div>
+            ) : (
+              <motion.div
+                key="edit-step2"
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+              >
+                <form onSubmit={handleSubmit} className="space-y-5">
+                   <div className={cn(
+                    "p-3 rounded-lg flex items-center justify-between border mb-4",
+                    formData.qualityControl === 'Baik' ? "bg-emerald-50 border-emerald-100" :
+                    formData.qualityControl === 'Kurang' ? "bg-amber-50 border-amber-100" :
+                    "bg-red-50 border-red-100"
+                  )}>
+                    <div className="flex items-center gap-2">
+                       <ShieldCheck size={14} className={cn(
+                        formData.qualityControl === 'Baik' ? "text-emerald-600" :
+                        formData.qualityControl === 'Kurang' ? "text-amber-600" :
+                        "text-red-600"
+                      )} />
+                      <span className={cn(
+                        "text-[10px] font-bold uppercase tracking-wider",
+                         formData.qualityControl === 'Baik' ? "text-emerald-700" :
+                         formData.qualityControl === 'Kurang' ? "text-amber-700" :
+                         "text-red-700"
+                      )}>
+                        QC: {formData.qualityControl}
+                      </span>
+                      <button 
+                        type="button"
+                        onClick={() => setStep(1)}
+                        className="text-[10px] font-bold text-blue-600 uppercase tracking-widest hover:underline ml-auto"
+                      >
+                        Ubah
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                        Tanggal
+                      </label>
+                      <input type="date" required value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} className="input-field" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                        Jam Pembagian
+                      </label>
+                      <input type="time" required value={formData.time} onChange={e => setFormData({ ...formData, time: e.target.value })} className="input-field" />
+                    </div>
+                  </div>
+                  
+                  <div className="text-[10px] text-slate-400 mt-1 ml-1 italic">
+                    Stok Tersedia: <span className="font-bold text-blue-600">{availableStock}</span> unit
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                      Nama Penerima
+                    </label>
+                    <input type="text" required placeholder="Ketik nama penerima..." value={formData.recipientName} onChange={e => setFormData({ ...formData, recipientName: e.target.value })} className="input-field" />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                        Jumlah Diberikan
+                      </label>
+                      <input type="number" min="1" max={availableStock > 0 ? availableStock : 1} required value={formData.amount} onChange={e => setFormData({ ...formData, amount: parseInt(e.target.value) || 0 })} className="input-field font-bold text-blue-700" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                        Jumlah Kembali
+                      </label>
+                      <input type="number" min="0" max={formData.amount} value={formData.returnedAmount} onChange={e => setFormData({ ...formData, returnedAmount: parseInt(e.target.value) || 0 })} className="input-field font-bold text-amber-600" />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button type="button" onClick={onClose} className="flex-1 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-all">Batal</button>
+                    <button type="submit" disabled={loading || formData.amount > availableStock} className="flex-[2] bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2">
+                      {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Simpan Perubahan'}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </motion.div>
     </div>
   );

@@ -2,6 +2,7 @@ export interface Distribution {
   id?: string;
   date: string;
   arrivalTime: string;
+  status?: string;
   recipient: string;
   studentOfficer?: string;
   menuDetails: string;
@@ -15,10 +16,14 @@ export interface Distribution {
 export interface Serving {
   id?: string;
   date: string;
+  time: string;
   recipientName: string;
   amount: number;
+  returnedAmount?: number;
+  qualityControl?: 'Baik' | 'Kurang' | 'Tidak Layak';
   userId: string;
   createdAt: any;
+  updatedAt?: any;
 }
 
 export enum OperationType {
