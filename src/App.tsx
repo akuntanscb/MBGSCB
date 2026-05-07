@@ -269,11 +269,15 @@ export default function App() {
                 className="max-w-6xl mx-auto"
               >
                 <div className="grid grid-cols-12 gap-8">
-                  <div className="col-span-12 lg:col-span-5">
+                  <div className="col-span-12 lg:col-span-5 space-y-6">
                     <PembagianForm 
                       onSuccess={() => setRefreshKey(prev => prev + 1)} 
                       distributions={distributions}
                       servings={servings}
+                    />
+                    <QuickReturnCard 
+                      servings={servings}
+                      onUpdate={() => setRefreshKey(prev => prev + 1)}
                     />
                   </div>
                   <div className="col-span-12 lg:col-span-7">
@@ -356,6 +360,7 @@ function PembagianForm({
 }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(1);
+  const [hasAutoSkipped, setHasAutoSkipped] = useState(false);
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     time: format(new Date(), 'HH:mm'),
@@ -364,6 +369,21 @@ function PembagianForm({
     returnedAmount: 0,
     qualityControl: 'Baik' as 'Baik' | 'Kurang' | 'Tidak Layak',
   });
+
+  // Auto-skip logic: If there's already a serving for this date, skip step 1
+  useEffect(() => {
+    const existingServing = servings.find(s => s.date === formData.date);
+    if (existingServing && !hasAutoSkipped && step === 1) {
+      setFormData(prev => ({ ...prev, qualityControl: existingServing.qualityControl }));
+      setStep(2);
+      setHasAutoSkipped(true);
+    }
+  }, [formData.date, servings, hasAutoSkipped, step]);
+
+  // Reset auto-skip tracker when date changes
+  useEffect(() => {
+    setHasAutoSkipped(false);
+  }, [formData.date]);
 
   // Calculate total received for this date
   const totalReceivedForDate = distributions
@@ -385,17 +405,11 @@ function PembagianForm({
       return;
     }
 
-    if (formData.returnedAmount > formData.amount) {
-      alert(`Jumlah kembali (${formData.returnedAmount}) tidak boleh melebihi jumlah yang diberikan (${formData.amount}).`);
-      return;
-    }
-
     setLoading(true);
     try {
       await distributionService.createServing({
         ...formData,
         amount: Number(formData.amount),
-        returnedAmount: Number(formData.returnedAmount),
       });
       setFormData({
         date: format(new Date(), 'yyyy-MM-dd'),
@@ -406,6 +420,7 @@ function PembagianForm({
         qualityControl: 'Baik',
       });
       setStep(1);
+      setHasAutoSkipped(false);
       onSuccess();
     } catch (error) {
       alert('Gagal menyimpan data pembagian');
@@ -572,37 +587,22 @@ function PembagianForm({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
-                    Jumlah Diberikan
-                  </label>
-                  <input 
-                    type="number" 
-                    min="1"
-                    max={availableStock > 0 ? availableStock : 1}
-                    required
-                    value={formData.amount}
-                    onChange={e => setFormData({ ...formData, amount: parseInt(e.target.value) || 0 })}
-                    className={cn(
-                      "input-field font-bold",
-                      formData.amount > availableStock ? "text-red-600 border-red-200 bg-red-50" : "text-blue-700"
-                    )}
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
-                    Jumlah Kembali
-                  </label>
-                  <input 
-                    type="number" 
-                    min="0"
-                    max={formData.amount}
-                    value={formData.returnedAmount}
-                    onChange={e => setFormData({ ...formData, returnedAmount: parseInt(e.target.value) || 0 })}
-                    className="input-field font-bold text-amber-600"
-                  />
-                </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
+                  Jumlah Diberikan
+                </label>
+                <input 
+                  type="number" 
+                  min="1"
+                  max={availableStock > 0 ? availableStock : 1}
+                  required
+                  value={formData.amount}
+                  onChange={e => setFormData({ ...formData, amount: parseInt(e.target.value) || 0 })}
+                  className={cn(
+                    "input-field font-bold",
+                    formData.amount > availableStock ? "text-red-600 border-red-200 bg-red-50" : "text-blue-700"
+                  )}
+                />
               </div>
               
               {availableStock > 0 && (
@@ -636,6 +636,148 @@ function PembagianForm({
   );
 }
 
+function QuickReturnCard({ servings, onUpdate }: { servings: Serving[], onUpdate: () => void }) {
+  const [selectedDate, setSelectedDate] = useState(format(new Date(), 'yyyy-MM-dd'));
+  const [selectedServingId, setSelectedServingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [amount, setAmount] = useState<number>(0);
+
+  // Find servings for selected date
+  const servingsForDate = servings.filter(s => s.date === selectedDate);
+  
+  // Update selected serving when date or servings change
+  useEffect(() => {
+    if (servingsForDate.length > 0) {
+      if (!selectedServingId || !servingsForDate.find(s => s.id === selectedServingId)) {
+        setSelectedServingId(servingsForDate[0].id || null);
+      }
+    } else {
+      setSelectedServingId(null);
+    }
+  }, [selectedDate, servings, selectedServingId]);
+
+  const servingToUpdate = servingsForDate.find(s => s.id === selectedServingId) || servingsForDate[0];
+  const totalGivenForDate = servingToUpdate?.amount || 0;
+  
+  useEffect(() => {
+    if (servingToUpdate) {
+      setAmount(servingToUpdate.returnedAmount || 0);
+    } else {
+      setAmount(0);
+    }
+  }, [servingToUpdate]);
+
+  const handleUpdate = async () => {
+    if (!servingToUpdate) return;
+    if (amount > totalGivenForDate) {
+       alert(`Jumlah kembali (${amount}) tidak boleh melebihi jumlah yang diberikan (${totalGivenForDate}).`);
+       return;
+    }
+    setLoading(true);
+    try {
+      await distributionService.updateServing(servingToUpdate.id!, { 
+        returnedAmount: amount 
+      });
+      onUpdate();
+    } catch (e) {
+      alert("Gagal update");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="glass-card p-6 border-amber-200 bg-amber-50/30">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-bold flex items-center gap-3">
+          <div className="w-1 h-5 bg-amber-500 rounded-full"></div>
+          Update Jumlah Kembali
+        </h3>
+        {servingsForDate.length > 1 && (
+          <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">
+            {servingsForDate.length} Record
+          </span>
+        )}
+      </div>
+      
+      <div className="space-y-4">
+         <div>
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Pilih Tanggal</label>
+            <input 
+              type="date" 
+              value={selectedDate} 
+              onChange={e => setSelectedDate(e.target.value)}
+              className="input-field bg-white/50 py-2 text-xs"
+            />
+         </div>
+
+         {servingToUpdate ? (
+            <div className="p-4 bg-white rounded-xl border border-amber-100 shadow-sm space-y-4">
+               <div className="flex justify-between items-center py-1 border-b border-dashed border-slate-100 gap-4">
+                  <div className="flex flex-col flex-1 min-w-0">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase mb-1">Pilih Penerima</span>
+                    {servingsForDate.length > 1 ? (
+                      <select 
+                        value={selectedServingId || ''} 
+                        onChange={e => setSelectedServingId(e.target.value)}
+                        className="bg-transparent text-xs font-bold text-slate-700 border-none p-0 focus:ring-0 cursor-pointer truncate"
+                      >
+                        {servingsForDate.map(s => (
+                          <option key={s.id} value={s.id}>{s.recipientName} ({s.amount})</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="text-xs font-bold text-slate-700 truncate">{servingToUpdate.recipientName}</span>
+                    )}
+                  </div>
+                  <div className="flex flex-col items-end shrink-0">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">Diberikan</span>
+                    <span className="text-xs font-bold text-blue-600 tabular-nums">{totalGivenForDate} unit</span>
+                  </div>
+               </div>
+
+               <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Update Jumlah Kembali</label>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <input 
+                        type="number"
+                        min="0"
+                        max={totalGivenForDate}
+                        value={amount}
+                        onChange={e => {
+                          const val = parseInt(e.target.value) || 0;
+                          setAmount(val > totalGivenForDate ? totalGivenForDate : val);
+                        }}
+                        className="w-full bg-slate-50 border-none rounded-lg py-2 px-3 text-sm font-bold text-amber-600 focus:ring-2 focus:ring-amber-200 transition-all text-center"
+                      />
+                    </div>
+                    <button 
+                      onClick={handleUpdate}
+                      disabled={loading}
+                      className="bg-amber-500 hover:bg-amber-600 text-white px-5 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 shadow-md shadow-amber-500/20 active:scale-95"
+                    >
+                      {loading ? (
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : 'Simpan'}
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-slate-400 mt-2 italic text-center">
+                    Data tersinkron otomatis dengan riwayat pembagian.
+                  </p>
+               </div>
+            </div>
+         ) : (
+            <div className="p-6 text-center text-slate-400 bg-white/40 border border-dashed border-slate-200 rounded-xl flex flex-col items-center justify-center min-h-[120px]">
+               <Package className="w-6 h-6 mb-2 opacity-20" />
+               <p className="text-[10px] italic font-medium">Belum ada data pembagian<br/>pada tanggal ini.</p>
+            </div>
+         )}
+      </div>
+    </div>
+  );
+}
+
 function RecentServingActivity({ 
   data, 
   onEdit, 
@@ -645,22 +787,46 @@ function RecentServingActivity({
   onEdit: (item: Serving) => void,
   onDelete: (id: string) => void
 }) {
+  const [filterDate, setFilterDate] = useState('');
+
+  const filteredData = filterDate 
+    ? data.filter(item => item.date === filterDate)
+    : data;
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
-      <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+      <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Riwayat Pembagian</h4>
-        <span className="text-[10px] text-slate-400 font-mono italic">Database Update</span>
+        <div className="flex items-center gap-2">
+          <Calendar size={14} className="text-slate-400" />
+          <input 
+            type="date"
+            value={filterDate}
+            onChange={e => setFilterDate(e.target.value)}
+            className="text-[10px] bg-white border border-slate-200 rounded-lg px-2 py-1 font-medium text-slate-600 focus:ring-1 focus:ring-blue-100 outline-none"
+          />
+          {filterDate && (
+            <button 
+              onClick={() => setFilterDate('')}
+              className="text-[10px] text-blue-600 font-bold hover:underline"
+            >
+              Reset
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto max-h-[500px]">
-        {data.length === 0 ? (
+        {filteredData.length === 0 ? (
           <div className="py-20 text-center text-slate-400">
             <HandHeart className="w-12 h-12 mx-auto mb-3 opacity-20" />
-            <p className="font-medium italic">Belum ada rekaman pembagian.</p>
+            <p className="font-medium italic">
+              {filterDate ? `Tidak ada pembagian pada ${filterDate}` : 'Belum ada rekaman pembagian.'}
+            </p>
           </div>
         ) : (
           <div className="divide-y divide-slate-50">
-            {data.map((item, idx) => (
+            {filteredData.map((item, idx) => (
               <motion.div 
                 key={item.id}
                 initial={{ opacity: 0 }}
@@ -2032,7 +2198,10 @@ function EditServingModal({
                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">
                         Jumlah Kembali
                       </label>
-                      <input type="number" min="0" max={formData.amount} value={formData.returnedAmount} onChange={e => setFormData({ ...formData, returnedAmount: parseInt(e.target.value) || 0 })} className="input-field font-bold text-amber-600" />
+                      <input type="number" min="0" max={formData.amount} value={formData.returnedAmount} onChange={e => {
+                        const val = parseInt(e.target.value) || 0;
+                        setFormData({ ...formData, returnedAmount: val > formData.amount ? formData.amount : val });
+                      }} className="input-field font-bold text-amber-600" />
                     </div>
                   </div>
 
