@@ -30,7 +30,9 @@ import {
   ArrowLeft,
   Printer,
   Download,
-  FileText
+  FileText,
+  Square,
+  CheckSquare
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -279,6 +281,7 @@ export default function App() {
                       onEdit={(item) => setEditingDistribution(item)}
                       onDelete={handleDeleteDistribution}
                       servings={servings}
+                      onRefresh={() => setRefreshKey(prev => prev + 1)}
                     />
                   </div>
                 </div>
@@ -325,6 +328,7 @@ export default function App() {
                       onEdit={(item) => setEditingServing(item)}
                       onDelete={handleDeleteServing}
                       distributions={distributions}
+                      onRefresh={() => setRefreshKey(prev => prev + 1)}
                     />
                   </div>
                 </div>
@@ -822,40 +826,112 @@ function RecentServingActivity({
   data, 
   onEdit, 
   onDelete,
-  distributions
+  distributions,
+  onRefresh
 }: { 
   data: Serving[], 
   onEdit: (item: Serving) => void,
   onDelete: (id: string) => void,
-  distributions: Distribution[]
+  distributions: Distribution[],
+  onRefresh: () => void
 }) {
   const [filterDate, setFilterDate] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const filteredData = filterDate 
     ? data.filter(item => item.date === filterDate)
     : data;
 
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredData.length && filteredData.length > 0) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredData.map(item => item.id!).filter(Boolean));
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (window.confirm(`Apakah Anda yakin ingin menghapus ${selectedIds.length} data pembagian terpilih? Tindakan ini tidak dapat dibatalkan.`)) {
+      try {
+        await Promise.all(selectedIds.map(id => distributionService.deleteServing(id)));
+        setSelectedIds([]);
+        onRefresh();
+      } catch (error) {
+        console.error('Bulk delete error:', error);
+        alert('Gagal menghapus beberapa data');
+      }
+    }
+  };
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
-      <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-        <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Riwayat Pembagian</h4>
-        <div className="flex items-center gap-2">
-          <Calendar size={14} className="text-slate-400" />
-          <input 
-            type="date"
-            value={filterDate}
-            onChange={e => setFilterDate(e.target.value)}
-            className="text-[10px] bg-white border border-slate-200 rounded-lg px-2 py-1 font-medium text-slate-600 focus:ring-1 focus:ring-blue-100 outline-none"
-          />
-          {filterDate && (
-            <button 
-              onClick={() => setFilterDate('')}
-              className="text-[10px] text-blue-600 font-bold hover:underline"
-            >
-              Reset
-            </button>
-          )}
+      <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col gap-3">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Riwayat Pembagian</h4>
+          <div className="flex items-center gap-2">
+            <Calendar size={14} className="text-slate-400" />
+            <input 
+              type="date"
+              value={filterDate}
+              onChange={e => {
+                setFilterDate(e.target.value);
+                setSelectedIds([]); // Reset selection when filter changes
+              }}
+              className="text-[10px] bg-white border border-slate-200 rounded-lg px-2 py-1 font-medium text-slate-600 focus:ring-1 focus:ring-blue-100 outline-none"
+            />
+            {filterDate && (
+              <button 
+                onClick={() => {
+                  setFilterDate('');
+                  setSelectedIds([]);
+                }}
+                className="text-[10px] text-blue-600 font-bold hover:underline"
+              >
+                Reset
+              </button>
+            )}
+          </div>
         </div>
+
+        {filteredData.length > 0 && (
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-1">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={toggleSelectAll}
+                className="flex items-center gap-2 text-[10px] font-bold text-slate-500 hover:text-blue-600 transition-colors"
+              >
+                {selectedIds.length === filteredData.length && filteredData.length > 0 ? (
+                  <CheckSquare size={14} className="text-blue-600" />
+                ) : (
+                  <Square size={14} />
+                )}
+                {selectedIds.length === filteredData.length ? 'Batal Semua' : 'Pilih Semua'}
+              </button>
+              {selectedIds.length > 0 && (
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                  {selectedIds.length} Terpilih
+                </span>
+              )}
+            </div>
+            
+            {selectedIds.length > 0 && (
+              <button 
+                onClick={handleBulkDelete}
+                className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-all"
+              >
+                <Trash2 size={14} />
+                Hapus Terpilih
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto max-h-[500px]">
@@ -870,6 +946,7 @@ function RecentServingActivity({
           <div className="divide-y divide-slate-50">
             {filteredData.map((item, idx) => {
               const relatedDist = distributions.find(d => d.date === item.date);
+              const isSelected = selectedIds.includes(item.id!);
               
               return (
                 <motion.div 
@@ -877,8 +954,19 @@ function RecentServingActivity({
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: idx * 0.05 }}
-                  className="p-5 hover:bg-slate-50 transition-colors flex items-center gap-5 group"
+                  onClick={() => toggleSelect(item.id!)}
+                  className={cn(
+                    "p-5 transition-colors flex items-center gap-5 group cursor-pointer",
+                    isSelected ? "bg-blue-50/50" : "hover:bg-slate-50"
+                  )}
                 >
+                  <div className="shrink-0 flex items-center">
+                    {isSelected ? (
+                      <CheckSquare size={18} className="text-blue-600" />
+                    ) : (
+                      <Square size={18} className="text-slate-300 group-hover:text-blue-400" />
+                    )}
+                  </div>
                   <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
                     <HandHeart size={18} />
                   </div>
@@ -889,7 +977,7 @@ function RecentServingActivity({
                         <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
                           {item.date} • {item.time}
                         </span>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                           <button 
                             type="button"
                             onClick={(e) => {
@@ -1788,18 +1876,103 @@ function RecentActivity({
   data, 
   onEdit, 
   onDelete,
-  servings
+  servings,
+  onRefresh
 }: { 
   data: Distribution[], 
   onEdit: (item: Distribution) => void,
   onDelete: (id: string) => void,
-  servings: Serving[]
+  servings: Serving[],
+  onRefresh: () => void
 }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const toggleSelectAll = () => {
+    if (selectedIds.length === data.length && data.length > 0) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(data.map(item => item.id!).filter(Boolean));
+    }
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    
+    const selectedItems = data.filter(item => selectedIds.includes(item.id!));
+    const affectedDates = Array.from(new Set(selectedItems.map(item => item.date)));
+    const relatedServings = servings.filter(s => affectedDates.includes(s.date));
+    
+    let confirmMsg = `Hapus ${selectedIds.length} data distribusi terpilih?\n\n`;
+    if (relatedServings.length > 0) {
+      confirmMsg += `PERHATIAN: Ditemukan ${relatedServings.length} data Riwayat Pembagian yang terhubung dengan distribusi ini.\n\n`;
+      confirmMsg += `Apakah Anda yakin ingin melanjutkan?`;
+    }
+
+    if (window.confirm(confirmMsg)) {
+      try {
+        await Promise.all(selectedIds.map(id => distributionService.deleteDistribution(id)));
+        
+        if (relatedServings.length > 0) {
+          if (window.confirm(`Hapus juga ${relatedServings.length} data Riwayat Pembagian agar data tetap SINKRON?`)) {
+            await Promise.all(relatedServings.map(s => distributionService.deleteServing(s.id!)));
+          }
+        }
+        
+        setSelectedIds([]);
+        onRefresh();
+      } catch (error) {
+        console.error('Bulk delete error:', error);
+        alert('Gagal menghapus beberapa data');
+      }
+    }
+  };
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
-      <div className="p-5 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-        <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Aktivitas Terbaru</h4>
-        <span className="text-[10px] text-slate-400 font-mono italic">Sinkronisasi Real-time</span>
+      <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col gap-3">
+        <div className="flex justify-between items-center">
+          <h4 className="text-sm font-bold text-slate-700 uppercase tracking-tight">Aktivitas Terbaru</h4>
+          <span className="text-[10px] text-slate-400 font-mono italic">Sinkronisasi Real-time</span>
+        </div>
+
+        {data.length > 0 && (
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100 mt-1">
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={toggleSelectAll}
+                className="flex items-center gap-2 text-[10px] font-bold text-slate-500 hover:text-blue-600 transition-colors"
+              >
+                {selectedIds.length === data.length && data.length > 0 ? (
+                  <CheckSquare size={14} className="text-blue-600" />
+                ) : (
+                  <Square size={14} />
+                )}
+                {selectedIds.length === data.length ? 'Batal Semua' : 'Pilih Semua'}
+              </button>
+              {selectedIds.length > 0 && (
+                <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                  {selectedIds.length} Terpilih
+                </span>
+              )}
+            </div>
+            
+            {selectedIds.length > 0 && (
+              <button 
+                onClick={handleBulkDelete}
+                className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-lg transition-all"
+              >
+                <Trash2 size={14} />
+                Hapus Terpilih
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto max-h-[600px]">
@@ -1816,6 +1989,7 @@ function RecentActivity({
                 .reduce((sum, s) => sum + s.amount, 0);
               const remainingStock = Math.max(0, item.amount - totalServedForDate);
               const progressPercentage = Math.min(100, (totalServedForDate / item.amount) * 100);
+              const isSelected = selectedIds.includes(item.id!);
 
               return (
                 <motion.div 
@@ -1823,8 +1997,19 @@ function RecentActivity({
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.05 }}
-                  className="p-5 hover:bg-slate-50 transition-colors flex gap-5 group"
+                  onClick={() => toggleSelect(item.id!)}
+                  className={cn(
+                    "p-5 transition-colors flex gap-5 group cursor-pointer relative",
+                    isSelected ? "bg-blue-50/50" : "hover:bg-slate-50"
+                  )}
                 >
+                  <div className="shrink-0 flex items-center">
+                    {isSelected ? (
+                      <CheckSquare size={18} className="text-blue-600" />
+                    ) : (
+                      <Square size={18} className="text-slate-300 group-hover:text-blue-400" />
+                    )}
+                  </div>
                   <div className="w-20 h-20 rounded-xl bg-slate-100 shrink-0 overflow-hidden border border-slate-200">
                     {item.photoUrl ? (
                       <img 
@@ -1853,7 +2038,7 @@ function RecentActivity({
                          <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
                           {item.date} • {item.arrivalTime}
                         </span>
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
                           <button 
                             type="button"
                             onClick={(e) => {
