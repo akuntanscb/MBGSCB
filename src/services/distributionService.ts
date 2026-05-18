@@ -51,13 +51,9 @@ export const distributionService = {
   },
 
   async getAllDistributions() {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return [];
-
     try {
       const q = query(
         collection(db, COLLECTION_NAME),
-        where('userId', '==', userId),
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
@@ -109,13 +105,9 @@ export const distributionService = {
   },
 
   async getAllServings() {
-    const userId = auth.currentUser?.uid;
-    if (!userId) return [];
-
     try {
       const q = query(
         collection(db, SERVING_COLLECTION),
-        where('userId', '==', userId),
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);

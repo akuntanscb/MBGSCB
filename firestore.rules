@@ -35,7 +35,7 @@ service cloud.firestore {
         && (!data.keys().hasAll(['photoUrl']) || (data.photoUrl is string && data.photoUrl.size() <= 1048576)) // 1MB limit for base64
         && data.menuDetails is string && data.menuDetails.size() <= 500
         && data.amount is number && data.amount >= 0
-        && data.userId == request.auth.uid
+        && data.userId is string // Allow shared userId reference
         && data.createdAt == request.time
         && data.updatedAt == request.time;
     }
@@ -43,27 +43,20 @@ service cloud.firestore {
     match /distributions/{distributionId} {
       allow create: if isSignedIn()
                    && isValidId(distributionId)
-                   && isValidDistribution(incoming());
+                   && isValidDistribution(incoming())
+                   && incoming().userId == request.auth.uid; // Track creator
 
       allow update: if isSignedIn()
                    && isValidId(distributionId)
-                   && existing().userId == request.auth.uid
-                   && incoming().userId == existing().userId
                    && incoming().createdAt == existing().createdAt
                    && incoming().updatedAt == request.time
                    && (
-                     // Logic for specific update actions if needed
                      incoming().diff(existing()).affectedKeys().hasAny(['date', 'arrivalTime', 'status', 'recipient', 'studentOfficer', 'menuDetails', 'photoUrl', 'amount', 'updatedAt'])
                    );
 
-      allow delete: if isSignedIn()
-                   && existing().userId == request.auth.uid;
-
-      allow get: if isSignedIn()
-                && existing().userId == request.auth.uid;
-
-      allow list: if isSignedIn()
-                 && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn();
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
     }
 
     // Validation for Serving
@@ -76,32 +69,28 @@ service cloud.firestore {
         && data.amount is number && data.amount >= 0
         && (!data.keys().hasAll(['returnedAmount']) || (data.returnedAmount is number && data.returnedAmount >= 0))
         && (!data.keys().hasAll(['qualityControl']) || (data.qualityControl in ['Baik', 'Kurang', 'Tidak Layak']))
-        && data.userId == request.auth.uid;
+        && data.userId is string;
     }
 
     match /servings/{servingId} {
       allow create: if isSignedIn()
                    && isValidId(servingId)
                    && isValidServing(incoming())
+                   && incoming().userId == request.auth.uid
                    && incoming().createdAt == request.time;
 
       allow update: if isSignedIn()
                    && isValidId(servingId)
-                   && existing().userId == request.auth.uid
-                   && incoming().userId == existing().userId
                    && incoming().createdAt == existing().createdAt
                    && incoming().updatedAt == request.time
                    && isValidServing(incoming())
                    && incoming().diff(existing()).affectedKeys().hasAny(['date', 'time', 'recipientName', 'amount', 'returnedAmount', 'qualityControl', 'updatedAt']);
 
-      allow delete: if isSignedIn()
-                   && existing().userId == request.auth.uid;
+      allow delete: if isSignedIn();
 
-      allow get: if isSignedIn()
-                && existing().userId == request.auth.uid;
+      allow get: if isSignedIn();
 
-      allow list: if isSignedIn()
-                 && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn();
     }
   }
 }

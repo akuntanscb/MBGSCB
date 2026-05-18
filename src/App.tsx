@@ -105,12 +105,49 @@ export default function App() {
   };
 
   const handleDeleteDistribution = async (id: string) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus data distribusi ini?')) {
+    console.log('Attempting to delete distribution:', id);
+    const distToDelete = distributions.find(d => d.id === id);
+    if (!distToDelete) {
+      console.warn('Distribution not found for deletion:', id);
+      return;
+    }
+
+    const date = distToDelete.date;
+    const relatedServings = servings.filter(s => s.date === date);
+    
+    let confirmMsg = `PENTING: Anda akan menghapus data distribusi tanggal ${date}.\n\n`;
+    
+    if (relatedServings.length > 0) {
+      confirmMsg += `PERHATIAN: Ditemukan ${relatedServings.length} data pada Riwayat Pembagian yang juga terhubung dengan tanggal ini.\n\n`;
+      confirmMsg += `Apakah Anda yakin ingin menghapus data distribusi ini?`;
+    } else {
+      confirmMsg += `Apakah Anda yakin ingin menghapus data distribusi ini?`;
+    }
+
+    if (window.confirm(confirmMsg)) {
       try {
+        console.log('Deleting distribution doc...');
         await distributionService.deleteDistribution(id);
+        
+        if (relatedServings.length > 0) {
+          const deleteServingsConfirm = window.confirm(
+            `INGAT: Masih ada ${relatedServings.length} data pembagian untuk tanggal ${date}.\n\n` +
+            `Sangat disarankan untuk menghapusnya juga agar data tetap Sinkron.\n\n` +
+            `Hapus SEMUA riwayat pembagian untuk tanggal ini?`
+          );
+          
+          if (deleteServingsConfirm) {
+            console.log('Deleting related servings...');
+            await Promise.all(relatedServings.map(s => distributionService.deleteServing(s.id!)));
+            console.log('Related servings deleted successfully');
+          }
+        }
+        
+        console.log('Data cleanup completed, refreshing state...');
         setRefreshKey(prev => prev + 1);
       } catch (error) {
-        alert('Gagal menghapus data');
+        console.error('Delete error detailed:', error);
+        alert('Gagal menghapus data. Silakan coba lagi atau cek koneksi internet Anda.');
       }
     }
   };
@@ -121,6 +158,7 @@ export default function App() {
         await distributionService.deleteServing(id);
         setRefreshKey(prev => prev + 1);
       } catch (error) {
+        console.error('Delete error:', error);
         alert('Gagal menghapus data');
       }
     }
@@ -240,6 +278,7 @@ export default function App() {
                       data={distributions} 
                       onEdit={(item) => setEditingDistribution(item)}
                       onDelete={handleDeleteDistribution}
+                      servings={servings}
                     />
                   </div>
                 </div>
@@ -285,6 +324,7 @@ export default function App() {
                       data={servings} 
                       onEdit={(item) => setEditingServing(item)}
                       onDelete={handleDeleteServing}
+                      distributions={distributions}
                     />
                   </div>
                 </div>
@@ -781,11 +821,13 @@ function QuickReturnCard({ servings, onUpdate }: { servings: Serving[], onUpdate
 function RecentServingActivity({ 
   data, 
   onEdit, 
-  onDelete 
+  onDelete,
+  distributions
 }: { 
   data: Serving[], 
   onEdit: (item: Serving) => void,
-  onDelete: (id: string) => void
+  onDelete: (id: string) => void,
+  distributions: Distribution[]
 }) {
   const [filterDate, setFilterDate] = useState('');
 
@@ -826,64 +868,83 @@ function RecentServingActivity({
           </div>
         ) : (
           <div className="divide-y divide-slate-50">
-            {filteredData.map((item, idx) => (
-              <motion.div 
-                key={item.id}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: idx * 0.05 }}
-                className="p-5 hover:bg-slate-50 transition-colors flex items-center gap-5 group"
-              >
-                <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
-                  <HandHeart size={18} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-center mb-0.5">
-                    <p className="text-sm font-bold text-slate-900 truncate pr-2">{item.recipientName}</p>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
-                        {item.date} • {item.time}
-                      </span>
-                      <div className="hidden group-hover:flex items-center gap-1">
-                        <button 
-                          onClick={() => onEdit(item)}
-                          className="p-1 px-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
-                          title="Edit"
-                        >
-                          <Edit size={12} />
-                        </button>
-                        <button 
-                          onClick={() => onDelete(item.id!)}
-                          className="p-1 px-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all"
-                          title="Hapus"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+            {filteredData.map((item, idx) => {
+              const relatedDist = distributions.find(d => d.date === item.date);
+              
+              return (
+                <motion.div 
+                  key={item.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className="p-5 hover:bg-slate-50 transition-colors flex items-center gap-5 group"
+                >
+                  <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center shrink-0">
+                    <HandHeart size={18} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-center mb-0.5">
+                      <p className="text-sm font-bold text-slate-900 truncate pr-2">{item.recipientName}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
+                          {item.date} • {item.time}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onEdit(item);
+                            }}
+                            className="p-1 px-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center"
+                            title="Edit"
+                          >
+                            <Edit size={12} />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (item.id) onDelete(item.id);
+                            }}
+                            className="p-1 px-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center"
+                            title="Hapus"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       </div>
                     </div>
+                    {relatedDist && (
+                      <div className="mb-2">
+                         <span className="text-[10px] font-medium text-slate-400 italic">Distribusi: {relatedDist.menuDetails}</span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-slate-500 flex items-center gap-2">
+                        Terbagi <span className="font-bold text-blue-600">{item.amount}</span> 
+                        {item.returnedAmount ? <span className="text-amber-600 font-medium">(Kembali: {item.returnedAmount})</span> : null}
+                        {item.qualityControl && (
+                          <span className={cn(
+                            "ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase border",
+                            item.qualityControl === 'Baik' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                            item.qualityControl === 'Kurang' ? "bg-amber-50 text-amber-600 border-amber-100" :
+                            "bg-red-50 text-red-600 border-red-100"
+                          )}>
+                            QC: {item.qualityControl}
+                          </span>
+                        )}
+                      </p>
+                      <span className="text-[10px] font-bold text-emerald-600">
+                        Net: {item.amount - (item.returnedAmount || 0)} MBG
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-slate-500 flex items-center gap-2">
-                      Terbagi <span className="font-bold text-blue-600">{item.amount}</span> 
-                      {item.returnedAmount ? <span className="text-amber-600 font-medium">(Kembali: {item.returnedAmount})</span> : null}
-                      {item.qualityControl && (
-                        <span className={cn(
-                          "ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded uppercase border",
-                          item.qualityControl === 'Baik' ? "bg-emerald-50 text-emerald-600 border-emerald-100" :
-                          item.qualityControl === 'Kurang' ? "bg-amber-50 text-amber-600 border-amber-100" :
-                          "bg-red-50 text-red-600 border-red-100"
-                        )}>
-                          QC: {item.qualityControl}
-                        </span>
-                      )}
-                    </p>
-                    <span className="text-[10px] font-bold text-emerald-600">
-                      Net: {item.amount - (item.returnedAmount || 0)} MBG
-                    </span>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
+                </motion.div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -917,10 +978,12 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
           --color-slate-800: #1e293b !important;
           --color-slate-900: #0f172a !important;
           --color-blue-50: #eff6ff !important;
+          --color-blue-100: #dbeafe !important;
           --color-blue-600: #2563eb !important;
           --color-emerald-50: #ecfdf5 !important;
           --color-emerald-500: #10b981 !important;
           --color-emerald-600: #059669 !important;
+          --color-amber-50: #fffbeb !important;
           --color-amber-500: #f59e0b !important;
           --color-red-500: #ef4444 !important;
           
@@ -928,6 +991,9 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
           --tw-border-opacity: 1 !important;
           --tw-text-opacity: 1 !important;
           --tw-bg-opacity: 1 !important;
+          --tw-gradient-from: #ffffff !important;
+          --tw-gradient-to: #ffffff !important;
+          --tw-ring-color: #e2e8f0 !important;
         }
         
         /* Force inherit plain colors to avoid oklch leaks */
@@ -961,14 +1027,16 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
             const el = node as HTMLElement;
             const style = clonedView.getComputedStyle(el);
             
-            // Check for oklch in crucial properties
+            // Check for oklch or oklab in crucial properties
             const colorProps = ['color', 'backgroundColor', 'borderColor', 'fill', 'stroke', 'stopColor'];
             colorProps.forEach(prop => {
               const val = (el.style as any)[prop] || style.getPropertyValue(prop);
-              if (val && (val.includes('oklch') || val.includes('oklab'))) {
+              if (val && (val.indexOf('oklch') !== -1 || val.indexOf('oklab') !== -1)) {
                 // Force safe fallbacks based on common classes or general dark/light context
                 if (prop === 'backgroundColor') {
                   if (el.classList.contains('bg-slate-50')) (el.style as any)[prop] = '#f8fafc';
+                  else if (el.classList.contains('bg-blue-600')) (el.style as any)[prop] = '#2563eb';
+                  else if (el.classList.contains('bg-emerald-600')) (el.style as any)[prop] = '#059669';
                   else (el.style as any)[prop] = '#ffffff';
                 } else if (prop === 'color') {
                   if (el.classList.contains('text-slate-900')) (el.style as any)[prop] = '#0f172a';
@@ -976,7 +1044,7 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
                   else if (el.classList.contains('text-emerald-600')) (el.style as any)[prop] = '#059669';
                   else (el.style as any)[prop] = '#334155';
                 } else {
-                  (el.style as any)[prop] = '#94a3b8'; // Generic slate-400 fallback
+                  (el.style as any)[prop] = '#e2e8f0'; // Safe border fallback
                 }
               }
             });
@@ -1025,10 +1093,10 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
             }
           });
 
-          // Global style sterilization
+          // Global style sterilization - FIXED REGEX to properly match oklch and oklab
           const styles = clonedDoc.querySelectorAll('style');
           styles.forEach(s => {
-            s.innerHTML = s.innerHTML.replace(/okl[ch|ab]\([^)]+\)/g, '#475569');
+            s.innerHTML = s.innerHTML.replace(/okl(ch|ab)\([^)]+\)/g, '#475569');
           });
         }
       });
@@ -1719,11 +1787,13 @@ function DistributionForm({ onSuccess }: { onSuccess: () => void }) {
 function RecentActivity({ 
   data, 
   onEdit, 
-  onDelete 
+  onDelete,
+  servings
 }: { 
   data: Distribution[], 
   onEdit: (item: Distribution) => void,
-  onDelete: (id: string) => void
+  onDelete: (id: string) => void,
+  servings: Serving[]
 }) {
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full">
@@ -1740,84 +1810,119 @@ function RecentActivity({
           </div>
         ) : (
           <div className="divide-y divide-slate-50">
-            {data.map((item, idx) => (
-              <motion.div 
-                key={item.id}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: idx * 0.05 }}
-                className="p-5 hover:bg-slate-50 transition-colors flex gap-5 group"
-              >
-                <div className="w-20 h-20 rounded-xl bg-slate-100 shrink-0 overflow-hidden border border-slate-200">
-                  {item.photoUrl ? (
-                    <img 
-                      src={item.photoUrl} 
-                      alt="Menu" 
-                      className="w-full h-full object-cover"
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-slate-300">
-                      <FileImage size={24} />
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex justify-between items-start mb-1">
-                    <p className="text-sm font-bold text-slate-900 truncate leading-tight pr-4">
-                      {item.recipient}
-                      {item.studentOfficer && (
-                        <span className="block text-[10px] font-medium text-slate-400 lowercase italic">
-                          bersama {item.studentOfficer}
-                        </span>
-                      )}
-                    </p>
-                    <div className="flex items-center gap-2">
-                       <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
-                        {item.date} • {item.arrivalTime}
-                      </span>
-                      <div className="hidden group-hover:flex items-center gap-1">
-                        <button 
-                          onClick={() => onEdit(item)}
-                          className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
-                          title="Edit Data"
-                        >
-                          <Edit size={14} />
-                        </button>
-                        <button 
-                          onClick={() => onDelete(item.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all"
-                          title="Hapus Data"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mb-2">
-                    <p className="text-xs text-slate-500 line-clamp-2 italic font-medium leading-relaxed">
-                      "{item.menuDetails}"
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full text-[10px] font-black tracking-widest uppercase border border-emerald-100">
-                      {item.amount} MBG
-                    </div>
-                    <div className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest">
-                      Terkirim
-                    </div>
-                    {item.status && (
-                      <div className={cn(
-                        "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest border",
-                        item.status === 'Tepat Waktu' ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-red-50 text-red-700 border-red-100"
-                      )}>
-                        {item.status}
+            {data.map((item, idx) => {
+              const totalServedForDate = servings
+                .filter(s => s.date === item.date)
+                .reduce((sum, s) => sum + s.amount, 0);
+              const remainingStock = Math.max(0, item.amount - totalServedForDate);
+              const progressPercentage = Math.min(100, (totalServedForDate / item.amount) * 100);
+
+              return (
+                <motion.div 
+                  key={item.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.05 }}
+                  className="p-5 hover:bg-slate-50 transition-colors flex gap-5 group"
+                >
+                  <div className="w-20 h-20 rounded-xl bg-slate-100 shrink-0 overflow-hidden border border-slate-200">
+                    {item.photoUrl ? (
+                      <img 
+                        src={item.photoUrl} 
+                        alt="Menu" 
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-slate-300">
+                        <FileImage size={24} />
                       </div>
                     )}
                   </div>
-                </div>
-              </motion.div>
-            ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-start mb-1">
+                      <p className="text-sm font-bold text-slate-900 truncate leading-tight pr-4">
+                        {item.recipient}
+                        {item.studentOfficer && (
+                          <span className="block text-[10px] font-medium text-slate-400 lowercase italic">
+                            bersama {item.studentOfficer}
+                          </span>
+                        )}
+                      </p>
+                      <div className="flex items-center gap-2">
+                         <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
+                          {item.date} • {item.arrivalTime}
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onEdit(item);
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center"
+                            title="Edit Data"
+                          >
+                            <Edit size={14} />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              console.log('Trash icon clicked for distribution:', item.id);
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (item.id) {
+                                onDelete(item.id);
+                              } else {
+                                console.error('Item ID is missing for deletion');
+                              }
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center cursor-pointer pointer-events-auto"
+                            title="Hapus Data"
+                          >
+                            <Trash2 size={14} className="pointer-events-none" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mb-2">
+                      <p className="text-xs text-slate-500 line-clamp-1 italic font-medium leading-relaxed">
+                        "{item.menuDetails}"
+                      </p>
+                    </div>
+                    
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
+                        <div className="flex items-center gap-2">
+                          <div className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-100">
+                            {totalServedForDate} TERBAGI
+                          </div>
+                          <div className={cn(
+                            "px-2 py-0.5 rounded-full border",
+                            remainingStock > 0 ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-red-50 text-red-700 border-red-100"
+                          )}>
+                            {remainingStock} SISA
+                          </div>
+                        </div>
+                        <span className="text-slate-400">{item.amount} MBG TOTAL</span>
+                      </div>
+                      
+                      <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
+                        <motion.div 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${progressPercentage}%` }}
+                          className={cn(
+                            "h-full rounded-full transition-all duration-1000",
+                            progressPercentage >= 100 ? "bg-blue-600" : "bg-blue-400"
+                          )}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
           </div>
         )}
       </div>
