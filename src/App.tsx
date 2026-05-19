@@ -32,7 +32,8 @@ import {
   Download,
   FileText,
   Square,
-  CheckSquare
+  CheckSquare,
+  FileDown
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -43,6 +44,7 @@ import {
   Legend 
 } from 'recharts';
 import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, signInWithGoogle, logout } from './lib/firebase';
@@ -169,6 +171,183 @@ export default function App() {
     });
   };
 
+  const handleGenerateReport = async (dist: Distribution) => {
+    const doc = new jsPDF() as any;
+    const relatedServings = servings.filter(s => s.date === dist.date);
+    
+    // Header
+    doc.setFillColor(1, 64, 45); // emerald-900 (approx)
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    // Attempt to add logo to PDF (using a robust fetch + canvas method via proxy)
+    try {
+      // Using wsrv.nl proxy to bypass CORS and ensure the shield logo works in jsPDF
+      const logoUrl = 'https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=400&output=png';
+      
+      // Yellow border/box with rounded corners (Sudut tidak tajam)
+      doc.setFillColor(255, 204, 0); // Yellow (border-yellow-400 equivalent)
+      doc.roundedRect(13, 5, 29, 29, 3, 3, 'F');
+      doc.setFillColor(255, 255, 255); // White inner
+      doc.roundedRect(14, 6, 27, 27, 2, 2, 'F');
+
+      const imgData = await new Promise<string>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'Anonymous';
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            // Add white background for JPEG conversion
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            try {
+              resolve(canvas.toDataURL('image/jpeg', 0.95));
+            } catch (e) {
+              console.error('Canvas export error:', e);
+              resolve('');
+            }
+          } else {
+            resolve('');
+          }
+        };
+        img.onerror = () => {
+          console.error('Image load error for PDF logo');
+          resolve('');
+        };
+        img.src = logoUrl;
+      });
+
+      if (imgData) {
+        doc.addImage(imgData, 'JPEG', 15, 7, 25, 25);
+      } else {
+        // Fallback text if image fails
+        doc.setTextColor(1, 64, 45);
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.text('SCB', 27.5, 21, { align: 'center' });
+      }
+    } catch (e) {
+      console.error('PDF Logo processing error:', e);
+    }
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('LAPORAN HARIAN MBG', 105, 20, { align: 'center' });
+    doc.setFontSize(10);
+    doc.text('SEKOLAH CENDEKIA BAZNAS', 105, 28, { align: 'center' });
+
+    // Info Section
+    doc.setTextColor(40, 40, 40);
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.text('INFORMASI DISTRIBUSI', 15, 55);
+    doc.line(15, 57, 195, 57);
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    
+    const infoY = 65;
+    doc.text('Tanggal & Waktu:', 15, infoY);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${dist.date} • ${dist.arrivalTime}`, 60, infoY);
+    
+    doc.setFont('helvetica', 'normal');
+    doc.text('Tendik Penerima:', 15, infoY + 10);
+    doc.setFont('helvetica', 'bold');
+    doc.text(dist.recipient, 60, infoY + 10);
+
+    doc.setFont('helvetica', 'normal');
+    doc.text('Petugas Lapangan:', 15, infoY + 20);
+    doc.setFont('helvetica', 'bold');
+    doc.text(dist.studentOfficer || '-', 60, infoY + 20);
+
+    doc.setFont('helvetica', 'normal');
+    doc.text('Jumlah MBG (Vol):', 15, infoY + 30);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${dist.amount} Porsi`, 60, infoY + 30);
+
+    doc.setFont('helvetica', 'normal');
+    doc.text('Rincian Menu:', 15, infoY + 40);
+    doc.setFont('helvetica', 'bold');
+    const menuLines = doc.splitTextToSize(dist.menuDetails, 130);
+    doc.text(menuLines, 60, infoY + 40);
+
+    // Photo Section if exists
+    let tableStartY = infoY + 60;
+    if (dist.photoUrl) {
+      try {
+        // We try to add the image. We'll use a small placeholder if it fails or just skip.
+        // For production we'd convert URL to base64 first.
+        // doc.addImage(dist.photoUrl, 'JPEG', 15, infoY + 50, 40, 40);
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        doc.text('* Foto Menu terlampir di sistem MBG Tracker', 15, infoY + 50);
+        doc.setTextColor(40, 40, 40);
+      } catch (e) {
+        console.error('PDF Image error:', e);
+      }
+    }
+
+    // Serving Table
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.text('RINCIAN PEMBAGIAN', 15, tableStartY);
+    doc.line(15, tableStartY + 2, 195, tableStartY + 2);
+
+    const tableData = relatedServings.map((s, idx) => [
+      idx + 1,
+      s.recipientName,
+      s.qualityControl || '-',
+      s.amount,
+      s.returnedAmount || 0,
+      s.amount - (s.returnedAmount || 0),
+      s.time
+    ]);
+
+    autoTable(doc, {
+      startY: tableStartY + 5,
+      head: [['No', 'Nama Penerima', 'QC Status', 'Bagi', 'Retur', 'Netto', 'Waktu']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillColor: [1, 64, 45], textColor: [255, 255, 255] },
+      styles: { fontSize: 8 },
+      columnStyles: {
+        0: { cellWidth: 10 },
+        2: { halign: 'center' },
+        3: { halign: 'center', cellWidth: 15 },
+        4: { halign: 'center', cellWidth: 15 },
+        5: { halign: 'center', cellWidth: 15 },
+        6: { halign: 'center' }
+      }
+    });
+
+    const totalDistributed = relatedServings.reduce((sum, s) => sum + s.amount, 0);
+    const totalReturned = relatedServings.reduce((sum, s) => sum + (s.returnedAmount || 0), 0);
+    const totalNet = totalDistributed - totalReturned;
+    const finalY = ((doc as any).lastAutoTable?.finalY || tableStartY + 20) + 10;
+    
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Total Distribusi: ${totalDistributed} Porsi`, 15, finalY);
+    doc.text(`Total Pengembalian: ${totalReturned} Porsi`, 15, finalY + 7);
+    doc.text(`Total Netto Terbagi: ${totalNet} Porsi`, 15, finalY + 14);
+    
+    doc.setTextColor(100, 100, 100);
+    doc.setFontSize(9);
+    doc.text(`Sisa Stok Batch: ${dist.amount - totalDistributed} Porsi`, 15, finalY + 21);
+    
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(`Dicetak pada: ${new Date().toLocaleString('id-ID')}`, 15, finalY + 30);
+
+    doc.save(`Laporan_MBG_${dist.date.replace(/\//g, '-')}.pdf`);
+  };
+
   const executeDelete = async () => {
     if (!deleteConfirm) return;
 
@@ -225,12 +404,19 @@ export default function App() {
       {/* Sidebar Desktop */}
       <aside className="hidden md:flex w-64 flex-col bg-emerald-900 text-white shadow-xl h-screen sticky top-0 overflow-y-auto">
         <div className="p-6 flex items-center gap-3">
-          <div className="w-10 h-10 bg-yellow-500 rounded-lg flex items-center justify-center font-bold text-emerald-900 text-xl shadow-lg shadow-black/20">
-            SCB
+          <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-lg shadow-black/20 overflow-hidden p-1 border-2 border-yellow-400">
+            <img 
+              src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=100&output=png" 
+              alt="Logo SCB" 
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/100px-Logo_BAZNAS.png';
+              }}
+            />
           </div>
           <div>
             <h1 className="text-sm font-bold leading-tight">MBG Tracker</h1>
-            <p className="text-[10px] opacity-70 italic font-medium">Baitu Maal Baznas</p>
+            <p className="text-[10px] opacity-90 font-bold text-yellow-400 uppercase tracking-wider">Sekolah Cendekia BAZNAS</p>
           </div>
         </div>
 
@@ -274,9 +460,21 @@ export default function App() {
       <main className="flex-1 flex flex-col h-screen overflow-hidden">
         {/* Header Mobile & Common Header */}
         <header className="bg-white border-b border-slate-200 px-8 py-6 flex items-center justify-between">
-          <div className="md:hidden flex items-center gap-2">
-            <div className="w-8 h-8 bg-yellow-500 rounded flex items-center justify-center font-bold text-emerald-900 text-sm">SCB</div>
-            <span className="font-bold text-emerald-900">MBG Tracker</span>
+          <div className="md:hidden flex items-center gap-3">
+            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center p-1 border-2 border-yellow-400 shadow-sm">
+               <img 
+                src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=100&output=png" 
+                alt="Logo SCB" 
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/100px-Logo_BAZNAS.png';
+                }}
+              />
+            </div>
+            <div className="flex flex-col">
+              <span className="font-bold text-emerald-900 leading-none text-sm">MBG Tracker</span>
+              <span className="text-[8px] font-black text-emerald-700 uppercase tracking-tighter">Sekolah Cendekia BAZNAS</span>
+            </div>
           </div>
           <div>
             <h2 className="text-2xl font-bold text-slate-900">
@@ -330,6 +528,7 @@ export default function App() {
                       onEdit={(item) => setEditingDistribution(item)}
                       onDelete={handleDeleteDistribution}
                       onBulkDelete={handleBulkDeleteDistributions}
+                      onPrintReport={handleGenerateReport}
                       servings={servings}
                       onRefresh={() => setRefreshKey(prev => prev + 1)}
                     />
@@ -1381,6 +1580,8 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
 
   const totalDistributed = distributions.reduce((sum, item) => sum + item.amount, 0);
   const totalServed = servings.reduce((sum, item) => sum + item.amount, 0);
+  const totalReturned = servings.reduce((sum, item) => sum + (item.returnedAmount || 0), 0);
+  const netServed = totalServed - totalReturned;
   const stockRemaining = totalDistributed - totalServed;
 
   return (
@@ -1417,41 +1618,48 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
         </div>
 
         {/* Overview Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Total Stok Masuk</p>
-          <div className="flex items-end gap-2">
-            <span className="text-3xl font-bold text-emerald-600">{totalDistributed}</span>
-            <span className="text-xs text-slate-400 pb-1 font-bold italic">MBG</span>
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Stok Masuk</p>
+            <div className="flex items-end gap-2">
+              <span className="text-3xl font-bold text-emerald-600">{totalDistributed}</span>
+              <span className="text-xs text-slate-400 pb-1 font-bold italic">MBG</span>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Dikirim</p>
+            <div className="flex items-end gap-2">
+              <span className="text-3xl font-bold text-blue-600">{totalServed}</span>
+              <span className="text-xs text-slate-400 pb-1 font-bold italic">Porsi</span>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Retur</p>
+            <div className="flex items-end gap-2">
+              <span className="text-3xl font-bold text-orange-600">{totalReturned}</span>
+              <span className="text-xs text-slate-400 pb-1 font-bold italic">Unit</span>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Net Terbagi</p>
+            <div className="flex items-end gap-2">
+              <span className="text-3xl font-bold text-emerald-900">{netServed}</span>
+              <span className="text-xs text-slate-400 pb-1 font-bold italic">Unit</span>
+            </div>
+          </div>
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-amber-500">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2 font-mono">Sisa Stok</p>
+            <div className="flex items-end gap-2">
+              <span className="text-3xl font-bold text-amber-600">{stockRemaining}</span>
+              <span className="text-xs text-slate-400 pb-1 font-bold italic">Unit</span>
+            </div>
           </div>
         </div>
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Total Terbagi</p>
-          <div className="flex items-end gap-2">
-            <span className="text-3xl font-bold text-blue-600">{totalServed}</span>
-            <span className="text-xs text-slate-400 pb-1 font-bold italic">Porsi</span>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-amber-500">
-          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2 font-mono">Sisa Inventori</p>
-          <div className="flex items-end gap-2">
-            <span className="text-3xl font-bold text-amber-600">{stockRemaining}</span>
-            <span className="text-xs text-slate-400 pb-1 font-bold italic">Unit</span>
-          </div>
-        </div>
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Civitas Penerima</p>
-          <div className="flex items-end gap-2">
-            <span className="text-3xl font-bold text-emerald-900">{servings.length}</span>
-            <span className="text-xs text-slate-400 pb-1 font-bold italic">Entitas</span>
-          </div>
-        </div>
-      </div>
 
       {/* Summary Narrative (Redaksi Satu Baris) */}
       <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
         <p className="text-xs font-medium text-slate-700 leading-relaxed">
-          <span className="font-bold">Analisis Ringkas:</span> Total stok distribusi masuk sebanyak <span className="font-bold text-emerald-600">{totalDistributed} MBG</span> telah berhasil diproses dan dibagikan kepada siswa sebanyak <span className="font-bold text-blue-600">{totalServed} porsi</span>, dengan sisa inventori tercatat sebanyak <span className="font-bold text-amber-600">{stockRemaining} unit</span> untuk periode pelaporan ini.
+          <span className="font-bold">Analisis Ringkas:</span> Total stok distribusi masuk sebanyak <span className="font-bold text-emerald-600">{totalDistributed} MBG</span> telah berhasil diproses. Sebanyak <span className="font-bold text-blue-600">{totalServed} porsi</span> telah dikirimkan, dengan retur sebanyak <span className="font-bold text-orange-600">{totalReturned} unit</span>, menghasilkan distribusi netto <span className="font-bold text-emerald-900">{netServed} unit</span>. Sisa inventori batch tercatat sebanyak <span className="font-bold text-amber-600">{stockRemaining} unit</span>.
         </p>
       </div>
 
@@ -1763,16 +1971,18 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
           animate={{ opacity: 1, scale: 1 }}
           className="relative hidden md:block"
         >
-          <div className="bg-white p-2 rounded-[32px] shadow-2xl rotate-2">
+          <div className="bg-white p-2 rounded-[32px] shadow-2xl rotate-2 border-4 border-yellow-400">
             <img 
-              src="https://images.unsplash.com/photo-1547592166-23ac45744acd?auto=format&fit=crop&q=80&w=1000" 
-              alt="Healthy Food" 
-              className="rounded-[24px] w-full hover:scale-105 transition-transform duration-700 shadow-inner"
-              referrerPolicy="no-referrer"
+              src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=800&output=png" 
+              alt="Logo Sekolah Cendekia BAZNAS" 
+              className="rounded-[24px] w-full hover:scale-105 transition-transform duration-700 shadow-inner p-10"
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png';
+              }}
             />
           </div>
           <div className="absolute -bottom-6 -right-6 bg-white p-6 rounded-2xl shadow-xl border-l-[8px] border-emerald-600">
-            <h4 className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">Cendekia Baznas</h4>
+            <h4 className="text-[10px] uppercase tracking-widest font-bold text-slate-400 mb-1">Sekolah Cendekia BAZNAS</h4>
             <span className="text-3xl font-bold text-slate-900">Laporan 2026</span>
           </div>
         </motion.div>
@@ -2016,6 +2226,7 @@ function RecentActivity({
   onEdit, 
   onDelete,
   onBulkDelete,
+  onPrintReport,
   servings,
   onRefresh
 }: { 
@@ -2023,6 +2234,7 @@ function RecentActivity({
   onEdit: (item: Distribution) => void,
   onDelete: (id: string) => void,
   onBulkDelete: (ids: string[]) => void,
+  onPrintReport: (item: Distribution) => void,
   servings: Serving[],
   onRefresh: () => void
 }) {
@@ -2099,11 +2311,15 @@ function RecentActivity({
         ) : (
           <div className="divide-y divide-slate-50">
             {data.map((item, idx) => {
-              const totalServedForDate = servings
+              const totalAmountForDate = servings
                 .filter(s => s.date === item.date)
                 .reduce((sum, s) => sum + s.amount, 0);
-              const remainingStock = Math.max(0, item.amount - totalServedForDate);
-              const progressPercentage = Math.min(100, (totalServedForDate / item.amount) * 100);
+              const totalReturnedForDate = servings
+                .filter(s => s.date === item.date)
+                .reduce((sum, s) => sum + (s.returnedAmount || 0), 0);
+              const netServedForDate = totalAmountForDate - totalReturnedForDate;
+              const remainingStock = Math.max(0, item.amount - totalAmountForDate);
+              const progressPercentage = Math.min(100, (netServedForDate / item.amount) * 100);
               const isSelected = selectedIds.includes(item.id!);
 
               return (
@@ -2160,6 +2376,17 @@ function RecentActivity({
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              onPrintReport(item);
+                            }}
+                            className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-md transition-all flex items-center justify-center relative z-20"
+                            title="Cetak Laporan Harian"
+                          >
+                            <FileDown size={16} />
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               onEdit(item);
                             }}
                             className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center relative z-20"
@@ -2191,18 +2418,29 @@ function RecentActivity({
                     
                     <div className="space-y-1.5">
                       <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
-                        <div className="flex items-center gap-2">
-                          <div className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-100">
-                            {totalServedForDate} TERBAGI
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-100 flex items-center gap-1">
+                            <Package size={10} />
+                            {totalAmountForDate} BAGI
+                          </div>
+                          {totalReturnedForDate > 0 && (
+                            <div className="bg-orange-50 text-orange-700 px-2 py-0.5 rounded-full border border-orange-100 flex items-center gap-1">
+                              <ArrowLeft size={10} />
+                              {totalReturnedForDate} RETUR
+                            </div>
+                          )}
+                          <div className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-100 font-black">
+                            {netServedForDate} NET
                           </div>
                           <div className={cn(
-                            "px-2 py-0.5 rounded-full border",
-                            remainingStock > 0 ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-red-50 text-red-700 border-red-100"
+                            "px-2 py-0.5 rounded-full border flex items-center gap-1",
+                            remainingStock > 0 ? "bg-slate-50 text-slate-500 border-slate-100" : "bg-red-50 text-red-700 border-red-100"
                           )}>
+                            <Clock size={10} />
                             {remainingStock} SISA
                           </div>
                         </div>
-                        <span className="text-slate-400">{item.amount} MBG TOTAL</span>
+                        <span className="text-slate-400 whitespace-nowrap">{item.amount} TOTAL</span>
                       </div>
                       
                       <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
