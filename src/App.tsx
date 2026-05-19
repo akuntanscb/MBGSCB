@@ -82,6 +82,15 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [editingDistribution, setEditingDistribution] = useState<Distribution | null>(null);
   const [editingServing, setEditingServing] = useState<Serving | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    id: string;
+    type: 'distribution' | 'serving' | 'bulk-distribution' | 'bulk-serving';
+    title: string;
+    message: string;
+    ids?: string[];
+    hasRelated?: boolean;
+    onDeleteServings?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
@@ -106,63 +115,93 @@ export default function App() {
     setServings(servData || []);
   };
 
-  const handleDeleteDistribution = async (id: string) => {
-    console.log('Attempting to delete distribution:', id);
-    const distToDelete = distributions.find(d => d.id === id);
-    if (!distToDelete) {
-      console.warn('Distribution not found for deletion:', id);
-      return;
-    }
+  const handleDeleteDistribution = (id: string) => {
+    const dist = distributions.find(d => d.id === id);
+    if (!dist) return;
 
-    const date = distToDelete.date;
-    const relatedServings = servings.filter(s => s.date === date);
+    const relatedCount = servings.filter(s => s.date === dist.date).length;
     
-    let confirmMsg = `PENTING: Anda akan menghapus data distribusi tanggal ${date}.\n\n`;
-    
-    if (relatedServings.length > 0) {
-      confirmMsg += `PERHATIAN: Ditemukan ${relatedServings.length} data pada Riwayat Pembagian yang juga terhubung dengan tanggal ini.\n\n`;
-      confirmMsg += `Apakah Anda yakin ingin menghapus data distribusi ini?`;
-    } else {
-      confirmMsg += `Apakah Anda yakin ingin menghapus data distribusi ini?`;
-    }
-
-    if (window.confirm(confirmMsg)) {
-      try {
-        console.log('Deleting distribution doc...');
-        await distributionService.deleteDistribution(id);
-        
-        if (relatedServings.length > 0) {
-          const deleteServingsConfirm = window.confirm(
-            `INGAT: Masih ada ${relatedServings.length} data pembagian untuk tanggal ${date}.\n\n` +
-            `Sangat disarankan untuk menghapusnya juga agar data tetap Sinkron.\n\n` +
-            `Hapus SEMUA riwayat pembagian untuk tanggal ini?`
-          );
-          
-          if (deleteServingsConfirm) {
-            console.log('Deleting related servings...');
-            await Promise.all(relatedServings.map(s => distributionService.deleteServing(s.id!)));
-            console.log('Related servings deleted successfully');
-          }
-        }
-        
-        console.log('Data cleanup completed, refreshing state...');
-        setRefreshKey(prev => prev + 1);
-      } catch (error) {
-        console.error('Delete error detailed:', error);
-        alert('Gagal menghapus data. Silakan coba lagi atau cek koneksi internet Anda.');
-      }
-    }
+    setDeleteConfirm({
+      id,
+      type: 'distribution',
+      title: 'Hapus Distribusi',
+      message: `Anda akan menghapus data distribusi tanggal ${dist.date} (${dist.menuDetails}).`,
+      hasRelated: relatedCount > 0,
+      onDeleteServings: relatedCount > 0
+    });
   };
 
-  const handleDeleteServing = async (id: string) => {
-    if (window.confirm('Apakah Anda yakin ingin menghapus data pembagian ini?')) {
-      try {
-        await distributionService.deleteServing(id);
-        setRefreshKey(prev => prev + 1);
-      } catch (error) {
-        console.error('Delete error:', error);
-        alert('Gagal menghapus data');
+  const handleDeleteServing = (id: string) => {
+    const serving = servings.find(s => s.id === id);
+    if (!serving) return;
+
+    setDeleteConfirm({
+      id,
+      type: 'serving',
+      title: 'Hapus Riwayat Pembagian',
+      message: `Hapus data pembagian untuk ${serving.recipientName}?`
+    });
+  };
+
+  const handleBulkDeleteDistributions = (ids: string[]) => {
+    const selectedItems = distributions.filter(item => ids.includes(item.id!));
+    const affectedDates = Array.from(new Set(selectedItems.map(item => item.date)));
+    const relatedCount = servings.filter(s => affectedDates.includes(s.date)).length;
+
+    setDeleteConfirm({
+      id: 'bulk',
+      ids,
+      type: 'bulk-distribution',
+      title: `Hapus ${ids.length} Distribusi`,
+      message: `Anda akan menghapus ${ids.length} data distribusi terpilih.`,
+      hasRelated: relatedCount > 0,
+      onDeleteServings: relatedCount > 0
+    });
+  };
+
+  const handleBulkDeleteServings = (ids: string[]) => {
+    setDeleteConfirm({
+      id: 'bulk',
+      ids,
+      type: 'bulk-serving',
+      title: `Hapus ${ids.length} Riwayat`,
+      message: `Hapus ${ids.length} data riwayat pembagian terpilih?`
+    });
+  };
+
+  const executeDelete = async () => {
+    if (!deleteConfirm) return;
+
+    try {
+      if (deleteConfirm.type === 'distribution') {
+        const dist = distributions.find(d => d.id === deleteConfirm.id);
+        const related = servings.filter(s => s.date === dist?.date);
+        
+        await distributionService.deleteDistribution(deleteConfirm.id);
+        if (deleteConfirm.onDeleteServings && related.length > 0) {
+          await Promise.all(related.map(s => distributionService.deleteServing(s.id!)));
+        }
+      } else if (deleteConfirm.type === 'serving') {
+        await distributionService.deleteServing(deleteConfirm.id);
+      } else if (deleteConfirm.type === 'bulk-distribution' && deleteConfirm.ids) {
+        const selectedItems = distributions.filter(item => deleteConfirm.ids!.includes(item.id!));
+        const affectedDates = Array.from(new Set(selectedItems.map(item => item.date)));
+        
+        await Promise.all(deleteConfirm.ids.map(id => distributionService.deleteDistribution(id)));
+        
+        if (deleteConfirm.onDeleteServings) {
+          const related = servings.filter(s => affectedDates.includes(s.date));
+          await Promise.all(related.map(s => distributionService.deleteServing(s.id!)));
+        }
+      } else if (deleteConfirm.type === 'bulk-serving' && deleteConfirm.ids) {
+        await Promise.all(deleteConfirm.ids.map(id => distributionService.deleteServing(id)));
       }
+
+      setDeleteConfirm(null);
+      setRefreshKey(prev => prev + 1);
+    } catch (error) {
+      console.error('Delete execution error:', error);
+      alert('Terjadi kesalahan saat menghapus data.');
     }
   };
 
@@ -262,6 +301,16 @@ export default function App() {
 
         {/* Tab Content */}
         <div className="flex-1 overflow-y-auto p-4 md:p-8 bg-slate-50">
+          <AnimatePresence>
+            {deleteConfirm && (
+              <DeleteConfirmModal 
+                config={deleteConfirm}
+                onClose={() => setDeleteConfirm(null)}
+                onConfirm={executeDelete}
+                onToggleRelated={(val) => setDeleteConfirm(prev => prev ? { ...prev, onDeleteServings: val } : null)}
+              />
+            )}
+          </AnimatePresence>
           <AnimatePresence mode="wait">
             {activeTab === 'input' && (
               <motion.div
@@ -280,6 +329,7 @@ export default function App() {
                       data={distributions} 
                       onEdit={(item) => setEditingDistribution(item)}
                       onDelete={handleDeleteDistribution}
+                      onBulkDelete={handleBulkDeleteDistributions}
                       servings={servings}
                       onRefresh={() => setRefreshKey(prev => prev + 1)}
                     />
@@ -296,6 +346,7 @@ export default function App() {
                         setEditingDistribution(null);
                         setRefreshKey(prev => prev + 1);
                       }}
+                      onDelete={handleDeleteDistribution}
                     />
                   )}
                 </AnimatePresence>
@@ -327,6 +378,7 @@ export default function App() {
                       data={servings} 
                       onEdit={(item) => setEditingServing(item)}
                       onDelete={handleDeleteServing}
+                      onBulkDelete={handleBulkDeleteServings}
                       distributions={distributions}
                       onRefresh={() => setRefreshKey(prev => prev + 1)}
                     />
@@ -345,6 +397,7 @@ export default function App() {
                         setEditingServing(null);
                         setRefreshKey(prev => prev + 1);
                       }}
+                      onDelete={handleDeleteServing}
                     />
                   )}
                 </AnimatePresence>
@@ -822,16 +875,108 @@ function QuickReturnCard({ servings, onUpdate }: { servings: Serving[], onUpdate
   );
 }
 
+function DeleteConfirmModal({ 
+  config, 
+  onClose, 
+  onConfirm,
+  onToggleRelated
+}: { 
+  config: {
+    title: string;
+    message: string;
+    ids?: string[];
+    hasRelated?: boolean;
+    onDeleteServings?: boolean;
+    type: string;
+  }, 
+  onClose: () => void, 
+  onConfirm: () => void,
+  onToggleRelated: (val: boolean) => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+      />
+      <motion.div 
+        initial={{ scale: 0.95, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.95, opacity: 0, y: 20 }}
+        className="relative bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden border border-slate-100"
+      >
+        <div className="p-6">
+          <div className="w-12 h-12 bg-red-50 text-red-600 rounded-xl flex items-center justify-center mb-4">
+            <Trash2 size={24} />
+          </div>
+          <h3 className="text-lg font-black text-slate-800 mb-2">{config.title}</h3>
+          <p className="text-sm text-slate-500 leading-relaxed mb-6">{config.message}</p>
+          
+          {config.hasRelated && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl p-4 mb-6">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5">
+                  <ShieldCheck size={16} className="text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-amber-800 mb-1">Sinkronisasi Data</p>
+                  <p className="text-[11px] text-amber-700 leading-relaxed mb-3">
+                    Hapus juga semua data riwayat pembagian yang terhubung dengan distribusi ini agar data tetap akurat?
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer group">
+                    <div 
+                      onClick={() => onToggleRelated(!config.onDeleteServings)}
+                      className="shrink-0"
+                    >
+                      {config.onDeleteServings ? (
+                        <CheckSquare size={18} className="text-amber-600" />
+                      ) : (
+                        <Square size={18} className="text-amber-300 group-hover:text-amber-400" />
+                      )}
+                    </div>
+                    <span className="text-[11px] font-bold text-amber-800">Ya, hapus riwayat pembagian juga</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          <div className="flex gap-3">
+            <button 
+              onClick={onClose}
+              className="flex-1 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-all text-sm"
+            >
+              Batal
+            </button>
+            <button 
+              onClick={onConfirm}
+              className="flex-[2] bg-red-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-600/20 hover:bg-red-700 transition-all text-sm flex items-center justify-center gap-2"
+            >
+              <Trash2 size={16} />
+              Konfirmasi Hapus
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function RecentServingActivity({ 
   data, 
   onEdit, 
   onDelete,
+  onBulkDelete,
   distributions,
   onRefresh
 }: { 
   data: Serving[], 
   onEdit: (item: Serving) => void,
   onDelete: (id: string) => void,
+  onBulkDelete: (ids: string[]) => void,
   distributions: Distribution[],
   onRefresh: () => void
 }) {
@@ -856,18 +1001,10 @@ function RecentServingActivity({
     );
   };
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     if (selectedIds.length === 0) return;
-    if (window.confirm(`Apakah Anda yakin ingin menghapus ${selectedIds.length} data pembagian terpilih? Tindakan ini tidak dapat dibatalkan.`)) {
-      try {
-        await Promise.all(selectedIds.map(id => distributionService.deleteServing(id)));
-        setSelectedIds([]);
-        onRefresh();
-      } catch (error) {
-        console.error('Bulk delete error:', error);
-        alert('Gagal menghapus beberapa data');
-      }
-    }
+    onBulkDelete(selectedIds);
+    setSelectedIds([]);
   };
 
   return (
@@ -954,13 +1091,15 @@ function RecentServingActivity({
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: idx * 0.05 }}
-                  onClick={() => toggleSelect(item.id!)}
                   className={cn(
-                    "p-5 transition-colors flex items-center gap-5 group cursor-pointer",
+                    "p-5 transition-colors flex items-center gap-5 group",
                     isSelected ? "bg-blue-50/50" : "hover:bg-slate-50"
                   )}
                 >
-                  <div className="shrink-0 flex items-center">
+                  <div 
+                    onClick={() => toggleSelect(item.id!)}
+                    className="shrink-0 flex items-center p-2 -ml-2 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                  >
                     {isSelected ? (
                       <CheckSquare size={18} className="text-blue-600" />
                     ) : (
@@ -977,30 +1116,30 @@ function RecentServingActivity({
                         <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
                           {item.date} • {item.time}
                         </span>
-                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-1">
                           <button 
                             type="button"
                             onClick={(e) => {
-                              e.preventDefault();
                               e.stopPropagation();
                               onEdit(item);
                             }}
-                            className="p-1 px-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center"
+                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center relative z-20"
                             title="Edit"
                           >
-                            <Edit size={12} />
+                            <Edit size={14} />
                           </button>
                           <button 
                             type="button"
                             onClick={(e) => {
-                              e.preventDefault();
                               e.stopPropagation();
-                              if (item.id) onDelete(item.id);
+                              if (item.id) {
+                                onDelete(item.id);
+                              }
                             }}
-                            className="p-1 px-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center"
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center cursor-pointer relative z-20"
                             title="Hapus"
                           >
-                            <Trash2 size={12} />
+                            <Trash2 size={14} />
                           </button>
                         </div>
                       </div>
@@ -1876,12 +2015,14 @@ function RecentActivity({
   data, 
   onEdit, 
   onDelete,
+  onBulkDelete,
   servings,
   onRefresh
 }: { 
   data: Distribution[], 
   onEdit: (item: Distribution) => void,
   onDelete: (id: string) => void,
+  onBulkDelete: (ids: string[]) => void,
   servings: Serving[],
   onRefresh: () => void
 }) {
@@ -1901,36 +2042,10 @@ function RecentActivity({
     );
   };
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = () => {
     if (selectedIds.length === 0) return;
-    
-    const selectedItems = data.filter(item => selectedIds.includes(item.id!));
-    const affectedDates = Array.from(new Set(selectedItems.map(item => item.date)));
-    const relatedServings = servings.filter(s => affectedDates.includes(s.date));
-    
-    let confirmMsg = `Hapus ${selectedIds.length} data distribusi terpilih?\n\n`;
-    if (relatedServings.length > 0) {
-      confirmMsg += `PERHATIAN: Ditemukan ${relatedServings.length} data Riwayat Pembagian yang terhubung dengan distribusi ini.\n\n`;
-      confirmMsg += `Apakah Anda yakin ingin melanjutkan?`;
-    }
-
-    if (window.confirm(confirmMsg)) {
-      try {
-        await Promise.all(selectedIds.map(id => distributionService.deleteDistribution(id)));
-        
-        if (relatedServings.length > 0) {
-          if (window.confirm(`Hapus juga ${relatedServings.length} data Riwayat Pembagian agar data tetap SINKRON?`)) {
-            await Promise.all(relatedServings.map(s => distributionService.deleteServing(s.id!)));
-          }
-        }
-        
-        setSelectedIds([]);
-        onRefresh();
-      } catch (error) {
-        console.error('Bulk delete error:', error);
-        alert('Gagal menghapus beberapa data');
-      }
-    }
+    onBulkDelete(selectedIds);
+    setSelectedIds([]);
   };
 
   return (
@@ -1997,13 +2112,15 @@ function RecentActivity({
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.05 }}
-                  onClick={() => toggleSelect(item.id!)}
                   className={cn(
-                    "p-5 transition-colors flex gap-5 group cursor-pointer relative",
+                    "p-5 transition-colors flex gap-5 group relative",
                     isSelected ? "bg-blue-50/50" : "hover:bg-slate-50"
                   )}
                 >
-                  <div className="shrink-0 flex items-center">
+                  <div 
+                    onClick={() => toggleSelect(item.id!)}
+                    className="shrink-0 flex items-center p-2 -ml-2 hover:bg-white rounded-lg transition-colors cursor-pointer self-start mt-2"
+                  >
                     {isSelected ? (
                       <CheckSquare size={18} className="text-blue-600" />
                     ) : (
@@ -2038,35 +2155,30 @@ function RecentActivity({
                          <span className="text-[10px] font-bold text-slate-400 shrink-0 tabular-nums">
                           {item.date} • {item.arrivalTime}
                         </span>
-                        <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center gap-1">
                           <button 
                             type="button"
                             onClick={(e) => {
-                              e.preventDefault();
                               e.stopPropagation();
                               onEdit(item);
                             }}
-                            className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center"
+                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all flex items-center justify-center relative z-20"
                             title="Edit Data"
                           >
-                            <Edit size={14} />
+                            <Edit size={16} />
                           </button>
                           <button 
                             type="button"
                             onClick={(e) => {
-                              console.log('Trash icon clicked for distribution:', item.id);
-                              e.preventDefault();
                               e.stopPropagation();
                               if (item.id) {
                                 onDelete(item.id);
-                              } else {
-                                console.error('Item ID is missing for deletion');
                               }
                             }}
-                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center cursor-pointer pointer-events-auto"
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-all flex items-center justify-center cursor-pointer relative z-20"
                             title="Hapus Data"
                           >
-                            <Trash2 size={14} className="pointer-events-none" />
+                            <Trash2 size={16} />
                           </button>
                         </div>
                       </div>
@@ -2118,11 +2230,13 @@ function RecentActivity({
 function EditDistributionModal({ 
   distribution, 
   onClose, 
-  onSuccess 
+  onSuccess,
+  onDelete
 }: { 
   distribution: Distribution, 
   onClose: () => void, 
-  onSuccess: () => void 
+  onSuccess: () => void,
+  onDelete?: (id: string) => void
 }) {
   const [loading, setLoading] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<string | null>(distribution.photoUrl || null);
@@ -2259,6 +2373,21 @@ function EditDistributionModal({
 
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={onClose} className="flex-1 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-all">Batal</button>
+            {onDelete && (
+              <button 
+                type="button" 
+                onClick={() => {
+                  if (distribution.id) {
+                    onDelete(distribution.id);
+                    onClose();
+                  }
+                }} 
+                className="p-3 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition-all flex items-center justify-center"
+                title="Hapus Data"
+              >
+                <Trash2 size={20} />
+              </button>
+            )}
             <button type="submit" disabled={loading} className="flex-[2] bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2">
               {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Simpan Perubahan'}
             </button>
@@ -2274,13 +2403,15 @@ function EditServingModal({
   onClose, 
   onSuccess,
   distributions,
-  servings
+  servings,
+  onDelete
 }: { 
   serving: Serving, 
   onClose: () => void, 
   onSuccess: () => void,
   distributions: Distribution[],
-  servings: Serving[]
+  servings: Serving[],
+  onDelete?: (id: string) => void
 }) {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(1);
@@ -2496,8 +2627,23 @@ function EditServingModal({
                   </div>
 
                   <div className="flex gap-3 pt-2">
-                    <button type="button" onClick={onClose} className="flex-1 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-all">Batal</button>
-                    <button type="submit" disabled={loading || formData.amount > availableStock} className="flex-[2] bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2">
+                    <button type="button" onClick={onClose} className="flex-1 py-3 border border-slate-200 rounded-xl font-bold text-slate-600 hover:bg-slate-50 transition-all text-sm">Batal</button>
+                    {onDelete && (
+                      <button 
+                        type="button" 
+                        onClick={() => {
+                          if (serving.id) {
+                            onDelete(serving.id);
+                            onClose();
+                          }
+                        }}
+                        className="p-3 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition-all flex items-center justify-center"
+                        title="Hapus Data"
+                      >
+                        <Trash2 size={20} />
+                      </button>
+                    )}
+                    <button type="submit" disabled={loading || formData.amount > availableStock} className="flex-[2] bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-2 text-sm">
                       {loading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Simpan Perubahan'}
                     </button>
                   </div>
