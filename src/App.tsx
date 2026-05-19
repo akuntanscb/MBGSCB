@@ -179,58 +179,69 @@ export default function App() {
     doc.setFillColor(1, 64, 45); // emerald-900 (approx)
     doc.rect(0, 0, 210, 40, 'F');
     
-    // Attempt to add logo to PDF (using a robust fetch + canvas method via proxy)
+    // Attempt to add logo to PDF (using a robust multi-source loader with fallbacks)
     try {
-      // Using wsrv.nl proxy to bypass CORS and ensure the shield logo works in jsPDF
-      const logoUrl = 'https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=400&output=png';
-      
-      // Yellow border/box with rounded corners (Sudut tidak tajam)
-      doc.setFillColor(255, 204, 0); // Yellow (border-yellow-400 equivalent)
-      doc.roundedRect(13, 5, 29, 29, 3, 3, 'F');
-      doc.setFillColor(255, 255, 255); // White inner
-      doc.roundedRect(14, 6, 27, 27, 2, 2, 'F');
-
-      const imgData = await new Promise<string>((resolve) => {
-        const img = new Image();
-        img.crossOrigin = 'Anonymous';
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            // Add white background for JPEG conversion
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0);
-            try {
-              resolve(canvas.toDataURL('image/jpeg', 0.95));
-            } catch (e) {
-              console.error('Canvas export error:', e);
-              resolve('');
-            }
-          } else {
-            resolve('');
+      const loadLogo = async (urls: string[]): Promise<string> => {
+        for (const url of urls) {
+          try {
+            const data = await new Promise<string>((resolve) => {
+              const img = new Image();
+              img.crossOrigin = 'Anonymous';
+              img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  // Add white background (safest for JPEG conversion)
+                  ctx.fillStyle = '#FFFFFF';
+                  ctx.fillRect(0, 0, canvas.width, canvas.height);
+                  ctx.drawImage(img, 0, 0);
+                  try {
+                    resolve(canvas.toDataURL('image/jpeg', 0.9));
+                  } catch (e) {
+                    resolve('');
+                  }
+                } else resolve('');
+              };
+              img.onerror = () => resolve('');
+              // Set timeout for each load attempt
+              setTimeout(() => resolve(''), 5000);
+              img.src = url;
+            });
+            if (data) return data;
+          } catch (e) {
+            // Silently try next source
           }
-        };
-        img.onerror = () => {
-          console.error('Image load error for PDF logo');
-          resolve('');
-        };
-        img.src = logoUrl;
-      });
+        }
+        return '';
+      };
+
+      const logoUrls = [
+        'https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=400&output=png',
+        'https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=400&output=png',
+        'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png'
+      ];
+      
+      const imgData = await loadLogo(logoUrls);
+
+      // Yellow border/box with rounded corners (Sudut tidak tajam)
+      doc.setFillColor(255, 204, 0); 
+      doc.roundedRect(13, 5, 29, 29, 3, 3, 'F');
+      doc.setFillColor(255, 255, 255); 
+      doc.roundedRect(14, 6, 27, 27, 2, 2, 'F');
 
       if (imgData) {
         doc.addImage(imgData, 'JPEG', 15, 7, 25, 25);
       } else {
-        // Fallback text if image fails
+        // Fallback text if all image sources fail
         doc.setTextColor(1, 64, 45);
         doc.setFontSize(10);
         doc.setFont('helvetica', 'bold');
         doc.text('SCB', 27.5, 21, { align: 'center' });
       }
     } catch (e) {
-      console.error('PDF Logo processing error:', e);
+      console.error('Global PDF logo catch:', e);
     }
     
     doc.setTextColor(255, 255, 255);
@@ -406,7 +417,7 @@ export default function App() {
         <div className="p-6 flex items-center gap-3">
           <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-lg shadow-black/20 overflow-hidden p-1 border-2 border-yellow-400">
             <img 
-              src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=100&output=png" 
+              src="https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=100&output=png" 
               alt="Logo SCB" 
               className="w-full h-full object-contain"
               onError={(e) => {
@@ -463,7 +474,7 @@ export default function App() {
           <div className="md:hidden flex items-center gap-3">
             <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center p-1 border-2 border-yellow-400 shadow-sm">
                <img 
-                src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=100&output=png" 
+                src="https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=100&output=png" 
                 alt="Logo SCB" 
                 className="w-full h-full object-contain"
                 onError={(e) => {
@@ -1973,7 +1984,7 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
         >
           <div className="bg-white p-2 rounded-[32px] shadow-2xl rotate-2 border-4 border-yellow-400">
             <img 
-              src="https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=800&output=png" 
+              src="https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=800&output=png" 
               alt="Logo Sekolah Cendekia BAZNAS" 
               className="rounded-[24px] w-full hover:scale-105 transition-transform duration-700 shadow-inner p-10"
               onError={(e) => {
