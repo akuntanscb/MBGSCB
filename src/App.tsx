@@ -33,7 +33,10 @@ import {
   FileText,
   Square,
   CheckSquare,
-  FileDown
+  FileDown,
+  RotateCcw,
+  AlertTriangle,
+  MapPin
 } from 'lucide-react';
 import { 
   PieChart, 
@@ -55,10 +58,37 @@ import { format } from 'date-fns';
 import { id } from 'date-fns/locale';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { UnreturnedTrackingSection } from './components/UnreturnedTrackingSection';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const SCB_LOGO_DATA_URL = `data:image/svg+xml;utf8,${encodeURIComponent(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="scbGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#D97706"/>
+    </linearGradient>
+    <linearGradient id="scbGreen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#065F46"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+  </defs>
+  <path d="M100 10 C155 10 185 32 185 85 C185 140 145 180 100 192 C55 180 15 140 15 85 C15 32 45 10 100 10 Z" fill="url(#scbGold)" stroke="#B45309" stroke-width="2"/>
+  <path d="M100 16 C150 16 177 36 177 85 C177 135 140 172 100 184 C60 172 23 135 23 85 C23 36 50 16 100 16 Z" fill="#FFFFFF"/>
+  <path d="M100 22 C146 22 170 40 170 85 C170 131 136 166 100 177 C64 166 30 131 30 85 C30 40 54 22 100 22 Z" fill="url(#scbGreen)"/>
+  <circle cx="100" cy="54" r="14" fill="#FBBF24"/>
+  <circle cx="104" cy="52" r="12" fill="#047857"/>
+  <polygon points="106,46 108,52 114,52 109,56 111,62 106,58 101,62 103,56 98,52 104,52" fill="#FBBF24"/>
+  <path d="M100 102 C85 92 60 93 45 100 L45 125 C60 118 85 117 100 126 C115 117 140 118 155 125 L155 100 C140 93 115 92 100 102 Z" fill="#FFFFFF" stroke="#FBBF24" stroke-width="2"/>
+  <line x1="100" y1="102" x2="100" y2="126" stroke="#FBBF24" stroke-width="2"/>
+  <rect x="36" y="136" width="128" height="22" rx="4" fill="#FBBF24"/>
+  <text x="100" y="152" font-family="Arial, sans-serif" font-weight="900" font-size="13" fill="#065F46" text-anchor="middle" letter-spacing="1">BAZNAS</text>
+  <text x="100" y="80" font-family="Arial, sans-serif" font-weight="bold" font-size="8.5" fill="#FDE68A" text-anchor="middle" letter-spacing="0.5">CENDEKIA</text>
+</svg>
+`)}`;
 
 const calculateStatus = (time: string) => {
   if (!time) return '';
@@ -73,7 +103,7 @@ const calculateStatus = (time: string) => {
   return '';
 };
 
-type Tab = 'input' | 'pembagian' | 'laporan';
+type Tab = 'input' | 'pembagian' | 'sisa' | 'laporan';
 
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
@@ -82,6 +112,8 @@ export default function App() {
   const [distributions, setDistributions] = useState<Distribution[]>([]);
   const [servings, setServings] = useState<Serving[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  const totalUnreturnedWadah = servings.reduce((sum, s) => sum + Math.max(0, (s.amount || 0) - (s.returnedAmount || 0)), 0);
   const [editingDistribution, setEditingDistribution] = useState<Distribution | null>(null);
   const [editingServing, setEditingServing] = useState<Serving | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -187,30 +219,42 @@ export default function App() {
             const data = await new Promise<string>((resolve) => {
               const img = new Image();
               img.crossOrigin = 'Anonymous';
+              let isDone = false;
               img.onload = () => {
+                if (isDone) return;
+                isDone = true;
                 const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
+                canvas.width = img.naturalWidth || img.width || 200;
+                canvas.height = img.naturalHeight || img.height || 200;
                 const ctx = canvas.getContext('2d');
                 if (ctx) {
                   // Add white background (safest for JPEG conversion)
                   ctx.fillStyle = '#FFFFFF';
                   ctx.fillRect(0, 0, canvas.width, canvas.height);
-                  ctx.drawImage(img, 0, 0);
+                  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                   try {
                     resolve(canvas.toDataURL('image/jpeg', 0.9));
-                  } catch (e) {
+                  } catch {
                     resolve('');
                   }
                 } else resolve('');
               };
-              img.onerror = () => resolve('');
-              // Set timeout for each load attempt
-              setTimeout(() => resolve(''), 5000);
+              img.onerror = () => {
+                if (isDone) return;
+                isDone = true;
+                resolve('');
+              };
+              // Fast timeout for network attempts
+              setTimeout(() => {
+                if (!isDone) {
+                  isDone = true;
+                  resolve('');
+                }
+              }, 1200);
               img.src = url;
             });
             if (data) return data;
-          } catch (e) {
+          } catch {
             // Silently try next source
           }
         }
@@ -219,8 +263,8 @@ export default function App() {
 
       const logoUrls = [
         'https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=400&output=png',
-        'https://wsrv.nl/?url=https://cendekiabaznas.sch.id/wp-content/uploads/2021/04/logo-scb.png&w=400&output=png',
-        'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png'
+        'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png',
+        SCB_LOGO_DATA_URL
       ];
       
       const imgData = await loadLogo(logoUrls);
@@ -240,8 +284,8 @@ export default function App() {
         doc.setFont('helvetica', 'bold');
         doc.text('SCB', 27.5, 21, { align: 'center' });
       }
-    } catch (e) {
-      console.error('Global PDF logo catch:', e);
+    } catch {
+      // Graceful fallback
     }
     
     doc.setTextColor(255, 255, 255);
@@ -421,7 +465,9 @@ export default function App() {
               alt="Logo SCB" 
               className="w-full h-full object-contain"
               onError={(e) => {
-                (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/100px-Logo_BAZNAS.png';
+                const target = e.target as HTMLImageElement;
+                target.onerror = null;
+                target.src = SCB_LOGO_DATA_URL;
               }}
             />
           </div>
@@ -443,6 +489,13 @@ export default function App() {
             onClick={() => setActiveTab('pembagian')}
             icon={<HandHeart size={20} />}
             label="Proses Pembagian"
+          />
+          <SidebarItem 
+            active={activeTab === 'sisa'} 
+            onClick={() => setActiveTab('sisa')}
+            icon={<RotateCcw size={20} />}
+            label="Pelacakan Sisa"
+            badge={totalUnreturnedWadah > 0 ? `${totalUnreturnedWadah}` : undefined}
           />
           <SidebarItem 
             active={activeTab === 'laporan'} 
@@ -478,7 +531,9 @@ export default function App() {
                 alt="Logo SCB" 
                 className="w-full h-full object-contain"
                 onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/100px-Logo_BAZNAS.png';
+                  const target = e.target as HTMLImageElement;
+                  target.onerror = null;
+                  target.src = SCB_LOGO_DATA_URL;
                 }}
               />
             </div>
@@ -489,10 +544,22 @@ export default function App() {
           </div>
           <div>
             <h2 className="text-2xl font-bold text-slate-900">
-              {activeTab === 'input' ? 'Dashboard Distribusi' : activeTab === 'pembagian' ? 'Monitoring Pembagian' : 'Analisis Distribusi'}
+              {activeTab === 'input' 
+                ? 'Dashboard Distribusi' 
+                : activeTab === 'pembagian' 
+                ? 'Monitoring Pembagian' 
+                : activeTab === 'sisa'
+                ? 'Pelacakan Sisa & Pengembalian'
+                : 'Analisis Distribusi'}
             </h2>
             <p className="hidden md:block text-slate-500 text-sm">
-              {activeTab === 'input' ? 'Monitoring Makanan Bergizi Gratis Real-time' : activeTab === 'pembagian' ? 'Pencatatan serving harian ke penerima manfaat' : 'Ringkasan distribusi per menu dan tendik'}
+              {activeTab === 'input' 
+                ? 'Monitoring Makanan Bergizi Gratis Real-time' 
+                : activeTab === 'pembagian' 
+                ? 'Pencatatan serving harian ke penerima manfaat' 
+                : activeTab === 'sisa'
+                ? 'Informasi lengkap kapan dan dimana wadah/ompreng tertahan di lapangan'
+                : 'Ringkasan distribusi per menu dan tendik'}
             </p>
           </div>
           <div className="flex items-center gap-4">
@@ -571,6 +638,31 @@ export default function App() {
                 exit={{ opacity: 0, y: -10 }}
                 className="max-w-6xl mx-auto"
               >
+                {totalUnreturnedWadah > 0 && (
+                  <div className="mb-6 p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                        <AlertTriangle size={18} />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-amber-900">
+                          Terdapat {totalUnreturnedWadah} wadah belum dikembalikan di lapangan!
+                        </h4>
+                        <p className="text-[11px] text-amber-700 mt-0.5">
+                          Pantau kapan & dimana letak sisa wadah tertahan atau catat pengembalian lunas.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setActiveTab('sisa')}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer"
+                    >
+                      <span>Lihat Pelacakan Sisa</span>
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-12 gap-8">
                   <div className="col-span-12 lg:col-span-5 space-y-6">
                     <PembagianForm 
@@ -614,6 +706,23 @@ export default function App() {
               </motion.div>
             )}
 
+            {activeTab === 'sisa' && (
+              <motion.div
+                key="sisa"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="max-w-6xl mx-auto"
+              >
+                <UnreturnedTrackingSection 
+                  servings={servings}
+                  distributions={distributions}
+                  onRefresh={() => setRefreshKey(prev => prev + 1)}
+                  onNavigateToPembagian={() => setActiveTab('pembagian')}
+                />
+              </motion.div>
+            )}
+
             {activeTab === 'laporan' && (
               <motion.div
                 key="laporan"
@@ -629,7 +738,7 @@ export default function App() {
         </div>
 
         {/* Mobile Nav */}
-        <nav className="md:hidden bg-emerald-900 border-t border-white/10 flex justify-around p-3 text-white">
+        <nav className="md:hidden bg-emerald-900 border-t border-white/10 flex justify-around p-2 text-white">
           <MobileNavItem 
             active={activeTab === 'input'} 
             onClick={() => setActiveTab('input')}
@@ -641,6 +750,13 @@ export default function App() {
             onClick={() => setActiveTab('pembagian')}
             icon={<HandHeart size={20} />}
             label="Pembagian"
+          />
+          <MobileNavItem 
+            active={activeTab === 'sisa'} 
+            onClick={() => setActiveTab('sisa')}
+            icon={<RotateCcw size={20} />}
+            label="Sisa"
+            badge={totalUnreturnedWadah > 0 ? `${totalUnreturnedWadah}` : undefined}
           />
           <MobileNavItem 
             active={activeTab === 'laporan'} 
@@ -1988,7 +2104,9 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
               alt="Logo Sekolah Cendekia BAZNAS" 
               className="rounded-[24px] w-full hover:scale-105 transition-transform duration-700 shadow-inner p-10"
               onError={(e) => {
-                (e.target as HTMLImageElement).src = 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png';
+                const target = e.target as HTMLImageElement;
+                target.onerror = null;
+                target.src = SCB_LOGO_DATA_URL;
               }}
             />
           </div>
@@ -2906,33 +3024,47 @@ function EditServingModal({
   );
 }
 
-function SidebarItem({ active, onClick, icon, label }: any) {
+function SidebarItem({ active, onClick, icon, label, badge }: any) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all font-medium text-sm",
+        "w-full flex items-center justify-between px-4 py-3 rounded-lg transition-all font-medium text-sm group",
         active 
-          ? "bg-white/10 text-white" 
+          ? "bg-white/10 text-white shadow-xs" 
           : "text-white/70 hover:bg-white/5 hover:text-white"
       )}
     >
-      {React.cloneElement(icon, { size: 18 })}
-      {label}
+      <div className="flex items-center gap-3">
+        {React.cloneElement(icon, { size: 18 })}
+        <span>{label}</span>
+      </div>
+      {badge ? (
+        <span className="text-[10px] font-black bg-rose-500 text-white px-2 py-0.5 rounded-full shadow-xs">
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
 
-function MobileNavItem({ active, onClick, icon, label }: any) {
+function MobileNavItem({ active, onClick, icon, label, badge }: any) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-1 p-2 transition-all",
+        "flex flex-col items-center gap-1 p-2 transition-all relative",
         active ? "text-white" : "text-white/50"
       )}
     >
-      {icon}
+      <div className="relative">
+        {React.cloneElement(icon, { size: 18 })}
+        {badge ? (
+          <span className="absolute -top-1 -right-2 text-[8px] font-black bg-rose-500 text-white px-1.5 py-0.2 rounded-full min-w-3 text-center leading-tight">
+            {badge}
+          </span>
+        ) : null}
+      </div>
       <span className="text-[10px] font-bold tracking-tight uppercase">{label}</span>
     </button>
   );
