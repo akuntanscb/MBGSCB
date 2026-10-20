@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   ClipboardList, 
   BarChart3, 
@@ -48,7 +48,6 @@ import {
 } from 'recharts';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import html2canvas from 'html2canvas';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, signInWithGoogle, logout } from './lib/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
@@ -89,6 +88,57 @@ const SCB_LOGO_DATA_URL = `data:image/svg+xml;utf8,${encodeURIComponent(`
   <text x="100" y="80" font-family="Arial, sans-serif" font-weight="bold" font-size="8.5" fill="#FDE68A" text-anchor="middle" letter-spacing="0.5">CENDEKIA</text>
 </svg>
 `)}`;
+
+export const loadPdfLogo = async (): Promise<string> => {
+  const logoUrls = [
+    'https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=400&output=png',
+    'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png',
+    SCB_LOGO_DATA_URL
+  ];
+  for (const url of logoUrls) {
+    try {
+      const data = await new Promise<string>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'Anonymous';
+        let isDone = false;
+        img.onload = () => {
+          if (isDone) return;
+          isDone = true;
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width || 200;
+          canvas.height = img.naturalHeight || img.height || 200;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            try {
+              resolve(canvas.toDataURL('image/jpeg', 0.9));
+            } catch {
+              resolve('');
+            }
+          } else resolve('');
+        };
+        img.onerror = () => {
+          if (isDone) return;
+          isDone = true;
+          resolve('');
+        };
+        setTimeout(() => {
+          if (!isDone) {
+            isDone = true;
+            resolve('');
+          }
+        }, 1200);
+        img.src = url;
+      });
+      if (data) return data;
+    } catch {
+      // try next source
+    }
+  }
+  return '';
+};
 
 const calculateStatus = (time: string) => {
   if (!time) return '';
@@ -211,63 +261,9 @@ export default function App() {
     doc.setFillColor(1, 64, 45); // emerald-900 (approx)
     doc.rect(0, 0, 210, 40, 'F');
     
-    // Attempt to add logo to PDF (using a robust multi-source loader with fallbacks)
+    // Attempt to add logo to PDF (using shared multi-source loader with fallbacks)
     try {
-      const loadLogo = async (urls: string[]): Promise<string> => {
-        for (const url of urls) {
-          try {
-            const data = await new Promise<string>((resolve) => {
-              const img = new Image();
-              img.crossOrigin = 'Anonymous';
-              let isDone = false;
-              img.onload = () => {
-                if (isDone) return;
-                isDone = true;
-                const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth || img.width || 200;
-                canvas.height = img.naturalHeight || img.height || 200;
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                  // Add white background (safest for JPEG conversion)
-                  ctx.fillStyle = '#FFFFFF';
-                  ctx.fillRect(0, 0, canvas.width, canvas.height);
-                  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                  try {
-                    resolve(canvas.toDataURL('image/jpeg', 0.9));
-                  } catch {
-                    resolve('');
-                  }
-                } else resolve('');
-              };
-              img.onerror = () => {
-                if (isDone) return;
-                isDone = true;
-                resolve('');
-              };
-              // Fast timeout for network attempts
-              setTimeout(() => {
-                if (!isDone) {
-                  isDone = true;
-                  resolve('');
-                }
-              }, 1200);
-              img.src = url;
-            });
-            if (data) return data;
-          } catch {
-            // Silently try next source
-          }
-        }
-        return '';
-      };
-
-      const logoUrls = [
-        'https://wsrv.nl/?url=https://upload.wikimedia.org/wikipedia/id/8/87/Logo_Sekolah_Cendekia_Baznas.png&w=400&output=png',
-        'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Logo_BAZNAS.png/400px-Logo_BAZNAS.png',
-        SCB_LOGO_DATA_URL
-      ];
-      
-      const imgData = await loadLogo(logoUrls);
+      const imgData = await loadPdfLogo();
 
       // Yellow border/box with rounded corners (Sudut tidak tajam)
       doc.setFillColor(255, 204, 0); 
@@ -1505,194 +1501,152 @@ function RecentServingActivity({
   );
 }
 
+type PeriodPreset = 'all' | 'today' | 'yesterday' | '7days' | '30days' | 'this_month' | 'last_month' | 'custom';
+
 function ReportSection({ distributions, servings }: { distributions: Distribution[], servings: Serving[] }) {
   const reportRef = useRef<HTMLDivElement>(null);
   const [isExporting, setIsExporting] = useState(false);
 
-  const exportToPDF = async () => {
-    if (!reportRef.current) return;
-    
-    setIsExporting(true);
-    try {
-      // 1. Inject compatibility styles to ACTUAL document before capture
-      const compatStyle = document.createElement('style');
-      compatStyle.id = 'pdf-compat-style';
-      compatStyle.innerHTML = `
-        :root {
-          /* Force standard HEX for all possible Tailwind v4 variables used in the app */
-          --color-slate-50: #f8fafc !important;
-          --color-slate-100: #f1f5f9 !important;
-          --color-slate-200: #e2e8f0 !important;
-          --color-slate-300: #cbd5e1 !important;
-          --color-slate-400: #94a3b8 !important;
-          --color-slate-500: #64748b !important;
-          --color-slate-600: #475569 !important;
-          --color-slate-700: #334155 !important;
-          --color-slate-800: #1e293b !important;
-          --color-slate-900: #0f172a !important;
-          --color-blue-50: #eff6ff !important;
-          --color-blue-100: #dbeafe !important;
-          --color-blue-600: #2563eb !important;
-          --color-emerald-50: #ecfdf5 !important;
-          --color-emerald-500: #10b981 !important;
-          --color-emerald-600: #059669 !important;
-          --color-amber-50: #fffbeb !important;
-          --color-amber-500: #f59e0b !important;
-          --color-red-500: #ef4444 !important;
-          
-          /* Also override some internal CSS variables that might use oklch */
-          --tw-border-opacity: 1 !important;
-          --tw-text-opacity: 1 !important;
-          --tw-bg-opacity: 1 !important;
-          --tw-gradient-from: #ffffff !important;
-          --tw-gradient-to: #ffffff !important;
-          --tw-ring-color: #e2e8f0 !important;
+  // Period filter state
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('all');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+
+  // Date references
+  const now = new Date();
+  const formatYMD = (d: Date) => format(d, 'yyyy-MM-dd');
+  const todayStr = formatYMD(now);
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = formatYMD(yesterday);
+
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  const sevenDaysAgoStr = formatYMD(sevenDaysAgo);
+
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
+  const thirtyDaysAgoStr = formatYMD(thirtyDaysAgo);
+
+  const thisMonthStart = format(new Date(now.getFullYear(), now.getMonth(), 1), 'yyyy-MM-dd');
+  const thisMonthEnd = format(new Date(now.getFullYear(), now.getMonth() + 1, 0), 'yyyy-MM-dd');
+
+  const lastMonthStart = format(new Date(now.getFullYear(), now.getMonth() - 1, 1), 'yyyy-MM-dd');
+  const lastMonthEnd = format(new Date(now.getFullYear(), now.getMonth(), 0), 'yyyy-MM-dd');
+
+  // Determine effective date range and label
+  const { effectiveStartDate, effectiveEndDate, activePeriodLabel } = useMemo(() => {
+    switch (periodPreset) {
+      case 'today':
+        return {
+          effectiveStartDate: todayStr,
+          effectiveEndDate: todayStr,
+          activePeriodLabel: `Hari Ini (${format(now, 'dd MMMM yyyy')})`
+        };
+      case 'yesterday':
+        return {
+          effectiveStartDate: yesterdayStr,
+          effectiveEndDate: yesterdayStr,
+          activePeriodLabel: `Kemarin (${format(yesterday, 'dd MMMM yyyy')})`
+        };
+      case '7days':
+        return {
+          effectiveStartDate: sevenDaysAgoStr,
+          effectiveEndDate: todayStr,
+          activePeriodLabel: `7 Hari Terakhir (${format(sevenDaysAgo, 'dd MMM')} - ${format(now, 'dd MMM yyyy')})`
+        };
+      case '30days':
+        return {
+          effectiveStartDate: thirtyDaysAgoStr,
+          effectiveEndDate: todayStr,
+          activePeriodLabel: `30 Hari Terakhir (${format(thirtyDaysAgo, 'dd MMM')} - ${format(now, 'dd MMM yyyy')})`
+        };
+      case 'this_month':
+        return {
+          effectiveStartDate: thisMonthStart,
+          effectiveEndDate: thisMonthEnd,
+          activePeriodLabel: `Bulan Ini (${format(now, 'MMMM yyyy')})`
+        };
+      case 'last_month':
+        return {
+          effectiveStartDate: lastMonthStart,
+          effectiveEndDate: lastMonthEnd,
+          activePeriodLabel: `Bulan Lalu (${format(new Date(now.getFullYear(), now.getMonth() - 1, 1), 'MMMM yyyy')})`
+        };
+      case 'custom':
+        if (customStartDate && customEndDate) {
+          return {
+            effectiveStartDate: customStartDate,
+            effectiveEndDate: customEndDate,
+            activePeriodLabel: `Periode Kustom: ${customStartDate} s/d ${customEndDate}`
+          };
+        } else if (customStartDate) {
+          return {
+            effectiveStartDate: customStartDate,
+            effectiveEndDate: '',
+            activePeriodLabel: `Periode Kustom: Mulai ${customStartDate}`
+          };
+        } else if (customEndDate) {
+          return {
+            effectiveStartDate: '',
+            effectiveEndDate: customEndDate,
+            activePeriodLabel: `Periode Kustom: Hingga ${customEndDate}`
+          };
         }
-        
-        /* Force inherit plain colors to avoid oklch leaks */
-        * {
-          border-color: #e2e8f0 !important;
-          outline-color: #e2e8f0 !important;
-        }
-      `;
-      document.head.appendChild(compatStyle);
-
-      await new Promise(resolve => setTimeout(resolve, 800));
-
-      const canvas = await html2canvas(reportRef.current, {
-        scale: 2,
-        useCORS: true,
-        logging: true, // Enable logging to see where it fails if it does
-        backgroundColor: '#ffffff',
-        onclone: (clonedDoc) => {
-          const reportRoot = clonedDoc.getElementById('pdf-report-root');
-          if (reportRoot) {
-            reportRoot.style.width = '1100px';
-            reportRoot.style.padding = '40px';
-            reportRoot.style.backgroundColor = '#ffffff';
-          }
-
-          // 2. Aggressive DOM Sanitization
-          const allEl = clonedDoc.querySelectorAll('*');
-          const clonedView = clonedDoc.defaultView || window;
-          
-          allEl.forEach((node: any) => {
-            const el = node as HTMLElement;
-            const style = clonedView.getComputedStyle(el);
-            
-            // Check for oklch or oklab in crucial properties
-            const colorProps = ['color', 'backgroundColor', 'borderColor', 'fill', 'stroke', 'stopColor'];
-            colorProps.forEach(prop => {
-              const val = (el.style as any)[prop] || style.getPropertyValue(prop);
-              if (val && (val.indexOf('oklch') !== -1 || val.indexOf('oklab') !== -1)) {
-                // Force safe fallbacks based on common classes or general dark/light context
-                if (prop === 'backgroundColor') {
-                  if (el.classList.contains('bg-slate-50')) (el.style as any)[prop] = '#f8fafc';
-                  else if (el.classList.contains('bg-blue-600')) (el.style as any)[prop] = '#2563eb';
-                  else if (el.classList.contains('bg-emerald-600')) (el.style as any)[prop] = '#059669';
-                  else (el.style as any)[prop] = '#ffffff';
-                } else if (prop === 'color') {
-                  if (el.classList.contains('text-slate-900')) (el.style as any)[prop] = '#0f172a';
-                  else if (el.classList.contains('text-blue-600')) (el.style as any)[prop] = '#2563eb';
-                  else if (el.classList.contains('text-emerald-600')) (el.style as any)[prop] = '#059669';
-                  else (el.style as any)[prop] = '#334155';
-                } else {
-                  (el.style as any)[prop] = '#e2e8f0'; // Safe border fallback
-                }
-              }
-            });
-
-            // Ensure charts SVGs don't use oklch
-            if (el.tagName === 'path' || el.tagName === 'circle' || el.tagName === 'rect') {
-              const fill = el.getAttribute('fill');
-              const stroke = el.getAttribute('stroke');
-              if (fill && fill.includes('okl')) el.setAttribute('fill', '#94a3b8');
-              if (stroke && stroke.includes('okl')) el.setAttribute('stroke', '#cbd5e1');
-            }
-
-            // Ensure visibility for tables
-            if (el.tagName === 'TABLE' || el.classList.contains('divide-y')) {
-              el.style.visibility = 'visible';
-              el.style.opacity = '1';
-              el.style.backgroundColor = '#ffffff';
-            }
-
-            el.style.animation = 'none';
-            el.style.transition = 'none';
-          });
-
-          // Fixed dimensions for charts
-          const chartContainers = clonedDoc.querySelectorAll('.recharts-responsive-container');
-          chartContainers.forEach((container: any) => {
-            if (container.closest('.pdf-hide-diagram')) {
-              container.style.display = 'none';
-              return;
-            }
-            container.style.width = '550px';
-            container.style.height = '350px';
-            container.style.display = 'block';
-            
-            const svg = container.querySelector('svg');
-            if (svg) {
-              svg.setAttribute('width', '550');
-              svg.setAttribute('height', '350');
-              svg.style.width = '550px';
-              svg.style.height = '350px';
-              
-              // Recalculate viewbox if necessary or force standard
-              if (!svg.getAttribute('viewBox')) {
-                svg.setAttribute('viewBox', '0 0 550 350');
-              }
-            }
-          });
-
-          // Global style sterilization - FIXED REGEX to properly match oklch and oklab
-          const styles = clonedDoc.querySelectorAll('style');
-          styles.forEach(s => {
-            s.innerHTML = s.innerHTML.replace(/okl(ch|ab)\([^)]+\)/g, '#475569');
-          });
-        }
-      });
-      
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`Laporan_MBG_${format(new Date(), 'yyyy-MM-dd')}.pdf`);
-      
-      document.getElementById('pdf-compat-style')?.remove();
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      document.getElementById('pdf-compat-style')?.remove();
-      alert('Gagal membuat PDF. Masalah format warna terdeteksi. Silakan coba lagi.');
-    } finally {
-      setIsExporting(false);
+        return {
+          effectiveStartDate: '',
+          effectiveEndDate: '',
+          activePeriodLabel: 'Periode Kustom (Semua Tanggal)'
+        };
+      case 'all':
+      default:
+        return {
+          effectiveStartDate: '',
+          effectiveEndDate: '',
+          activePeriodLabel: 'Semua Periode (Keseluruhan Data)'
+        };
     }
-  };
+  }, [periodPreset, customStartDate, customEndDate, todayStr, yesterdayStr, sevenDaysAgoStr, thirtyDaysAgoStr, thisMonthStart, thisMonthEnd, lastMonthStart, lastMonthEnd]);
 
-  const statsByMenu = distributions.reduce((acc, curr) => {
+  // Filtered dataset according to selected period
+  const filteredDistributions = useMemo(() => {
+    return distributions.filter(d => {
+      if (effectiveStartDate && d.date < effectiveStartDate) return false;
+      if (effectiveEndDate && d.date > effectiveEndDate) return false;
+      return true;
+    });
+  }, [distributions, effectiveStartDate, effectiveEndDate]);
+
+  const filteredServings = useMemo(() => {
+    return servings.filter(s => {
+      if (effectiveStartDate && s.date < effectiveStartDate) return false;
+      if (effectiveEndDate && s.date > effectiveEndDate) return false;
+      return true;
+    });
+  }, [servings, effectiveStartDate, effectiveEndDate]);
+
+  const statsByMenu = filteredDistributions.reduce((acc, curr) => {
     acc[curr.menuDetails] = (acc[curr.menuDetails] || 0) + curr.amount;
     return acc;
   }, {} as Record<string, number>);
 
-  const statsByStatus = distributions.reduce((acc, curr) => {
+  const statsByStatus = filteredDistributions.reduce((acc, curr) => {
     if (curr.status) {
       acc[curr.status] = (acc[curr.status] || 0) + curr.amount;
     }
     return acc;
   }, {} as Record<string, number>);
 
-  const statsByQC = servings.reduce((acc, curr) => {
+  const statsByQC = filteredServings.reduce((acc, curr) => {
     if (curr.qualityControl) {
       acc[curr.qualityControl] = (acc[curr.qualityControl] || 0) + curr.amount;
     }
     return acc;
   }, {} as Record<string, number>);
 
-  const statusData = Object.entries(statsByStatus).map(([name, value]) => ({ name, value }));
-  const qcData = Object.entries(statsByQC).map(([name, value]) => ({ name, value }));
+  const statusData = Object.entries(statsByStatus).map(([name, value]) => ({ name, value: Number(value) }));
+  const qcData = Object.entries(statsByQC).map(([name, value]) => ({ name, value: Number(value) }));
 
   const STATUS_COLORS = {
     'Tepat Waktu': '#10b981', // emerald-500
@@ -1705,28 +1659,326 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
     'Tidak Layak': '#ef4444'  // red-500
   };
 
-  const totalDistributed = distributions.reduce((sum, item) => sum + item.amount, 0);
-  const totalServed = servings.reduce((sum, item) => sum + item.amount, 0);
-  const totalReturned = servings.reduce((sum, item) => sum + (item.returnedAmount || 0), 0);
+  const totalDistributed = filteredDistributions.reduce((sum, item) => sum + item.amount, 0);
+  const totalServed = filteredServings.reduce((sum, item) => sum + item.amount, 0);
+  const totalReturned = filteredServings.reduce((sum, item) => sum + (item.returnedAmount || 0), 0);
   const netServed = totalServed - totalReturned;
   const stockRemaining = totalDistributed - totalServed;
 
+  const exportToPDF = async () => {
+    setIsExporting(true);
+    try {
+      const doc = new jsPDF('p', 'mm', 'a4') as any;
+      const pageWidth = doc.internal.pageSize.getWidth(); // 210
+      const pageHeight = doc.internal.pageSize.getHeight(); // 297
+
+      // 1. Header Banner
+      doc.setFillColor(1, 64, 45); // emerald-900 (#01402d)
+      doc.rect(0, 0, pageWidth, 38, 'F');
+      doc.setFillColor(255, 204, 0); // Gold accent line
+      doc.rect(0, 38, pageWidth, 2.5, 'F');
+
+      // Attempt to load official logo
+      try {
+        const logoData = await loadPdfLogo();
+        doc.setFillColor(255, 204, 0);
+        doc.roundedRect(12, 5, 28, 28, 2.5, 2.5, 'F');
+        doc.setFillColor(255, 255, 255);
+        doc.roundedRect(13, 6, 26, 26, 2, 2, 'F');
+        if (logoData) {
+          doc.addImage(logoData, 'JPEG', 14, 7, 24, 24);
+        } else {
+          doc.setTextColor(1, 64, 45);
+          doc.setFontSize(10);
+          doc.setFont('helvetica', 'bold');
+          doc.text('SCB', 26, 20, { align: 'center' });
+        }
+      } catch {
+        // Fallback silently
+      }
+
+      // Header Typography
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(14);
+      doc.setFont('helvetica', 'bold');
+      doc.text('LAPORAN RINGKASAN & ANALITIK MBG', 116, 15, { align: 'center' });
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'normal');
+      doc.text('PROGRAM MAKAN BERGIZI GRATIS • SEKOLAH CENDEKIA BAZNAS', 116, 22, { align: 'center' });
+      doc.setFontSize(8);
+      doc.setTextColor(220, 245, 230);
+      doc.text(`Periode: ${activePeriodLabel}`, 116, 29, { align: 'center' });
+
+      // Sub-header metadata
+      doc.setTextColor(80, 80, 80);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Dicetak: ${format(new Date(), 'dd MMMM yyyy HH:mm', { locale: id })} WIB`, 14, 46);
+      doc.text(`Data: ${filteredDistributions.length} Sesi Distribusi • ${filteredServings.length} Rincian Pembagian`, 196, 46, { align: 'right' });
+
+      // 2. Executive KPI Summary Table
+      const distPercent = totalDistributed > 0 ? ((netServed / totalDistributed) * 100).toFixed(1) + '%' : '0%';
+      autoTable(doc, {
+        startY: 50,
+        head: [['Stok Masuk', 'Terkirim (Porsi)', 'Retur Wadah/Fisik', 'Net Tersalurkan', 'Sisa Stok Dapur', 'Rasio Distribusi']],
+        body: [[
+          `${totalDistributed} MBG`,
+          `${totalServed} Porsi`,
+          `${totalReturned} Unit`,
+          `${netServed} Porsi`,
+          `${stockRemaining} Porsi`,
+          distPercent
+        ]],
+        theme: 'grid',
+        headStyles: {
+          fillColor: [1, 64, 45],
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          halign: 'center',
+          fontSize: 7.5,
+          cellPadding: 2.5
+        },
+        bodyStyles: {
+          halign: 'center',
+          fontSize: 8.5,
+          fontStyle: 'bold',
+          textColor: [15, 23, 42],
+          cellPadding: 3
+        },
+        margin: { left: 14, right: 14 }
+      });
+
+      // Executive Summary narrative
+      let curY = (doc as any).lastAutoTable.finalY + 3;
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(14, curY, 182, 12, 2, 2, 'FD');
+      doc.setFontSize(7.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(51, 65, 85);
+      const narrative = `Analisis Ringkas: Total stok distribusi masuk sebanyak ${totalDistributed} MBG. Sebanyak ${totalServed} porsi disalurkan ke penerima manfaat, retur wadah/fisik ${totalReturned} unit, menghasilkan konsumsi netto ${netServed} unit. Sisa inventori dapur tercatat ${stockRemaining} unit.`;
+      doc.text(doc.splitTextToSize(narrative, 174), 17, curY + 4.5);
+      curY += 15;
+
+      // 3. Ketepatan Waktu & QC Tables
+      const statusRows = statusData.length > 0 
+        ? statusData.map(s => [s.name, `${s.value} MBG`, totalDistributed > 0 ? `${((s.value / totalDistributed) * 100).toFixed(1)}%` : '0%'])
+        : [['-', '-', '-']];
+      
+      const qcRows = qcData.length > 0
+        ? qcData.map(q => [q.name, `${q.value} Porsi`, totalServed > 0 ? `${((q.value / totalServed) * 100).toFixed(1)}%` : '0%'])
+        : [['-', '-', '-']];
+
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(1, 64, 45);
+      doc.text('KETEPATAN WAKTU TIBA', 14, curY + 3);
+      doc.text('KUALITAS MAKANAN (QUALITY CONTROL)', 110, curY + 3);
+
+      autoTable(doc, {
+        startY: curY + 5,
+        head: [['Kategori Waktu', 'Volume', 'Persentase']],
+        body: statusRows,
+        theme: 'striped',
+        headStyles: { fillColor: [5, 150, 105], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+        styles: { fontSize: 7, cellPadding: 2 },
+        margin: { left: 14, right: 110 },
+        tableWidth: 86
+      });
+      const table1FinalY = (doc as any).lastAutoTable.finalY;
+
+      autoTable(doc, {
+        startY: curY + 5,
+        head: [['Status QC', 'Volume', 'Persentase']],
+        body: qcRows,
+        theme: 'striped',
+        headStyles: { fillColor: [37, 99, 235], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+        styles: { fontSize: 7, cellPadding: 2 },
+        margin: { left: 110, right: 14 },
+        tableWidth: 86
+      });
+      const table2FinalY = (doc as any).lastAutoTable.finalY;
+      curY = Math.max(table1FinalY, table2FinalY) + 6;
+
+      // 4. Akumulasi Menu Table
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(1, 64, 45);
+      doc.text('AKUMULASI STOK PER MENU', 14, curY + 3);
+
+      const menuRows = Object.entries(statsByMenu)
+        .sort((a, b) => Number(b[1]) - Number(a[1]))
+        .map(([menu, amount], idx) => [
+          idx + 1,
+          menu,
+          `${amount} MBG`,
+          totalDistributed > 0 ? `${((Number(amount) / totalDistributed) * 100).toFixed(1)}%` : '0%'
+        ]);
+
+      autoTable(doc, {
+        startY: curY + 5,
+        head: [['No', 'Rincian Menu MBG', 'Total Volume', 'Porsi dari Total']],
+        body: menuRows.length > 0 ? menuRows : [['-', 'Belum ada data menu', '-', '-']],
+        theme: 'striped',
+        headStyles: { fillColor: [1, 64, 45], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+        styles: { fontSize: 7, cellPadding: 2 },
+        columnStyles: {
+          0: { cellWidth: 10, halign: 'center' },
+          1: { cellWidth: 100 },
+          2: { cellWidth: 35, halign: 'right' },
+          3: { cellWidth: 35, halign: 'right' }
+        },
+        margin: { left: 14, right: 14 }
+      });
+      curY = (doc as any).lastAutoTable.finalY + 6;
+
+      // 5. Log Sesi Distribusi MBG Table
+      doc.setFontSize(8.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(1, 64, 45);
+      doc.text('LOG SESI DISTRIBUSI MBG', 14, curY + 3);
+
+      const distRows = filteredDistributions.map((d, idx) => [
+        idx + 1,
+        d.date,
+        d.arrivalTime,
+        d.recipient,
+        d.studentOfficer || '-',
+        d.menuDetails,
+        `${d.amount}`,
+        d.status || '-'
+      ]);
+
+      autoTable(doc, {
+        startY: curY + 5,
+        head: [['No', 'Tanggal', 'Jam Tiba', 'Tendik', 'Petugas SCB', 'Menu', 'Jml', 'Ketepatan']],
+        body: distRows.length > 0 ? distRows : [['-', '-', '-', '-', '-', 'Tidak ada data pada periode ini', '-', '-']],
+        theme: 'striped',
+        headStyles: { fillColor: [1, 64, 45], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+        styles: { fontSize: 6.5, cellPadding: 1.8 },
+        columnStyles: {
+          0: { cellWidth: 8, halign: 'center' },
+          1: { cellWidth: 20 },
+          2: { cellWidth: 16, halign: 'center' },
+          3: { cellWidth: 26 },
+          4: { cellWidth: 24 },
+          5: { cellWidth: 50 },
+          6: { cellWidth: 16, halign: 'right' },
+          7: { cellWidth: 20, halign: 'center' }
+        },
+        margin: { left: 14, right: 14 }
+      });
+      curY = (doc as any).lastAutoTable.finalY + 6;
+
+      // 6. Rincian Penyaluran Servings
+      if (filteredServings.length > 0) {
+        if (curY > pageHeight - 35) {
+          doc.addPage();
+          curY = 20;
+        }
+        doc.setFontSize(8.5);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(1, 64, 45);
+        doc.text('RINCIAN PENYALURAN PENERIMA MANFAAT & QC', 14, curY + 3);
+
+        const servingRows = filteredServings.map((s, idx) => [
+          idx + 1,
+          s.date,
+          s.time || '-',
+          s.recipientName,
+          `${s.amount}`,
+          `${s.returnedAmount || 0}`,
+          `${s.amount - (s.returnedAmount || 0)}`,
+          s.qualityControl || '-'
+        ]);
+
+        autoTable(doc, {
+          startY: curY + 5,
+          head: [['No', 'Tanggal', 'Waktu', 'Penerima Manfaat / Lokasi', 'Porsi', 'Retur', 'Netto', 'QC']],
+          body: servingRows,
+          theme: 'striped',
+          headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontSize: 7, fontStyle: 'bold' },
+          styles: { fontSize: 6.5, cellPadding: 1.8 },
+          columnStyles: {
+            0: { cellWidth: 8, halign: 'center' },
+            1: { cellWidth: 22 },
+            2: { cellWidth: 16, halign: 'center' },
+            3: { cellWidth: 64 },
+            4: { cellWidth: 18, halign: 'right' },
+            5: { cellWidth: 18, halign: 'right' },
+            6: { cellWidth: 18, halign: 'right' },
+            7: { cellWidth: 18, halign: 'center' }
+          },
+          margin: { left: 14, right: 14 }
+        });
+        curY = (doc as any).lastAutoTable.finalY + 8;
+      }
+
+      // 7. Signature Block
+      if (curY > pageHeight - 45) {
+        doc.addPage();
+        curY = 20;
+      }
+
+      const sigDateStr = format(new Date(), 'dd MMMM yyyy', { locale: id });
+      doc.setFontSize(8);
+      doc.setTextColor(50, 50, 50);
+      doc.setFont('helvetica', 'normal');
+      doc.text(`Bogor, ${sigDateStr}`, 145, curY);
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('Petugas Pelaksana MBG,', 25, curY + 6);
+      doc.text('Penanggung Jawab Sekolah,', 145, curY + 6);
+
+      doc.setFont('helvetica', 'normal');
+      doc.text('( .................................................... )', 25, curY + 28);
+      doc.text('( .................................................... )', 145, curY + 28);
+      doc.setFontSize(7);
+      doc.setTextColor(120, 120, 120);
+      doc.text('Dapur & Logistik SCB', 25, curY + 32);
+      doc.text('Kepala / Waka SCB', 145, curY + 32);
+
+      // 8. Pagination on all pages
+      const totalPages = (doc as any).internal.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setFontSize(7.5);
+        doc.setTextColor(140, 140, 140);
+        doc.text(
+          `MBG Tracker Sekolah Cendekia BAZNAS • Halaman ${p} dari ${totalPages}`,
+          105,
+          292,
+          { align: 'center' }
+        );
+      }
+
+      const cleanFileName = `Laporan_MBG_${activePeriodLabel.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+      doc.save(cleanFileName);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      alert('Terjadi kesalahan saat membuat PDF. Silakan coba lagi.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
-    <div className="space-y-10 pb-20">
+    <div className="space-y-8 pb-20">
+      {/* Top Header Card */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
         <div>
           <h3 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <FileText className="text-blue-600" size={24} />
             Summary Report & Analytics
           </h3>
-          <p className="text-xs text-slate-400 font-medium italic mt-1">
-            Data rekapitulasi distribusi dan pembagian per {format(new Date(), 'dd MMMM yyyy')}
+          <p className="text-xs text-slate-500 font-medium mt-1">
+            Data rekapitulasi distribusi dan pembagian Makan Bergizi Gratis (MBG)
           </p>
         </div>
         <button 
           onClick={exportToPDF}
           disabled={isExporting}
-          className="flex items-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/10 active:scale-95 disabled:opacity-50"
+          className="flex items-center gap-2 bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold text-xs hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/10 active:scale-95 disabled:opacity-50 cursor-pointer"
         >
           {isExporting ? (
             <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -1737,11 +1989,187 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
         </button>
       </div>
 
+      {/* Period Selection Bar */}
+      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-800 flex items-center justify-center">
+              <Calendar size={18} />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-tight">Pilih Rentang Waktu / Periode</h4>
+              <p className="text-[11px] text-slate-400">Filter seluruh analisis, tabel, dan diagram sesuai periode yang dipilih</p>
+            </div>
+          </div>
+
+          <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-800 rounded-lg text-xs font-bold border border-emerald-200 self-start sm:self-auto">
+            <span>{activePeriodLabel}</span>
+          </div>
+        </div>
+
+        {/* Preset Period Buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('all')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'all'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            Semua Waktu
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('today')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'today'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            Hari Ini
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('yesterday')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'yesterday'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            Kemarin
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('7days')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === '7days'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            7 Hari Terakhir
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('30days')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === '30days'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            30 Hari Terakhir
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('this_month')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'this_month'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            Bulan Ini
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('last_month')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'last_month'
+                ? 'bg-emerald-900 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            Bulan Lalu
+          </button>
+          <button
+            type="button"
+            onClick={() => setPeriodPreset('custom')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+              periodPreset === 'custom'
+                ? 'bg-amber-600 text-white shadow-sm'
+                : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200'
+            }`}
+          >
+            Kustom Tanggal...
+          </button>
+        </div>
+
+        {/* Custom Date Pickers Drawer */}
+        {periodPreset === 'custom' && (
+          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3 animate-in fade-in duration-200">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              <div className="flex-1 space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
+                  Dari Tanggal:
+                </label>
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex-1 space-y-1">
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-tight block">
+                  Sampai Tanggal:
+                </label>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-0 sm:pt-5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                  }}
+                  className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 transition-all"
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Record Counter Info */}
+        <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+          <span>
+            Menampilkan data <strong>{filteredDistributions.length}</strong> sesi distribusi dan <strong>{filteredServings.length}</strong> pembagian.
+          </span>
+          {periodPreset !== 'all' && (
+            <button
+              type="button"
+              onClick={() => {
+                setPeriodPreset('all');
+                setCustomStartDate('');
+                setCustomEndDate('');
+              }}
+              className="text-emerald-700 hover:underline font-bold"
+            >
+              Reset ke Semua Waktu
+            </button>
+          )}
+        </div>
+      </div>
+
       <div ref={reportRef} id="pdf-report-root" className="space-y-10 p-1 sm:p-0">
         {/* Print Header (Only visible in PDF/Print) */}
         <div className="hidden print:block mb-8 border-b-2 border-slate-900 pb-4">
           <h1 className="text-2xl font-bold uppercase tracking-tight text-slate-900">Laporan Monitoring MBG</h1>
-          <p className="text-sm font-medium text-slate-500">Dicetak pada: {format(new Date(), 'dd/MM/yyyy HH:mm')}</p>
+          <p className="text-sm font-bold text-emerald-800 mt-0.5">Periode: {activePeriodLabel}</p>
+          <p className="text-xs font-medium text-slate-500">Dicetak pada: {format(new Date(), 'dd/MM/yyyy HH:mm')} WIB</p>
         </div>
 
         {/* Overview Cards */}
@@ -1786,7 +2214,7 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
       {/* Summary Narrative (Redaksi Satu Baris) */}
       <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
         <p className="text-xs font-medium text-slate-700 leading-relaxed">
-          <span className="font-bold">Analisis Ringkas:</span> Total stok distribusi masuk sebanyak <span className="font-bold text-emerald-600">{totalDistributed} MBG</span> telah berhasil diproses. Sebanyak <span className="font-bold text-blue-600">{totalServed} porsi</span> telah dikirimkan, dengan retur sebanyak <span className="font-bold text-orange-600">{totalReturned} unit</span>, menghasilkan distribusi netto <span className="font-bold text-emerald-900">{netServed} unit</span>. Sisa inventori batch tercatat sebanyak <span className="font-bold text-amber-600">{stockRemaining} unit</span>.
+          <span className="font-bold">Analisis Ringkas ({activePeriodLabel}):</span> Total stok distribusi masuk sebanyak <span className="font-bold text-emerald-600">{totalDistributed} MBG</span> telah diproses. Sebanyak <span className="font-bold text-blue-600">{totalServed} porsi</span> telah disalurkan ke penerima manfaat, dengan retur fisik sebanyak <span className="font-bold text-orange-600">{totalReturned} unit</span>, menghasilkan distribusi netto <span className="font-bold text-emerald-900">{netServed} unit</span>. Sisa inventori batch dapur tercatat sebanyak <span className="font-bold text-amber-600">{stockRemaining} unit</span>.
         </p>
       </div>
 
@@ -1946,7 +2374,7 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {Object.entries(statsByMenu).sort((a,b) => b[1] - a[1]).map(([menu, amount]) => (
+              {Object.entries(statsByMenu).sort((a,b) => (b[1] as number) - (a[1] as number)).map(([menu, amount]) => (
                 <tr key={menu} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-bold text-slate-700 max-w-[180px] truncate">{menu}</td>
                   <td className="px-6 py-4 text-right font-mono font-bold text-emerald-600">{amount}</td>
@@ -1970,11 +2398,11 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
             </thead>
             <tbody className="divide-y divide-slate-50">
               {Object.entries(
-                servings.reduce((acc, curr) => {
+                filteredServings.reduce((acc, curr) => {
                   acc[curr.recipientName] = (acc[curr.recipientName] || 0) + curr.amount;
                   return acc;
                 }, {} as Record<string, number>)
-              ).sort((a,b) => b[1] - a[1]).map(([name, amount]) => (
+              ).sort((a,b) => (b[1] as number) - (a[1] as number)).map(([name, amount]) => (
                 <tr key={name} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 font-bold text-slate-700">{name}</td>
                   <td className="px-6 py-4 text-right font-mono font-bold text-blue-600">{amount}</td>
@@ -1992,13 +2420,13 @@ function ReportSection({ distributions, servings }: { distributions: Distributio
           </div>
           
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {distributions.length === 0 ? (
+            {filteredDistributions.length === 0 ? (
               <div className="col-span-full py-12 text-center bg-white rounded-xl border border-dashed border-slate-200">
                 <FileImage size={40} className="mx-auto text-slate-200 mb-3" />
-                <p className="text-slate-400 font-medium italic">Belum ada dokumentasi menu tersedia.</p>
+                <p className="text-slate-400 font-medium italic">Tidak ada dokumentasi menu pada periode yang dipilih.</p>
               </div>
             ) : (
-              distributions
+              filteredDistributions
                 .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
                 .map((dist, idx) => (
                 <motion.div 
